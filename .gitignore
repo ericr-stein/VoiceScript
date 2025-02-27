@@ -10,3 +10,4 @@ data/error/
 data/worker/
 models/
 ffmpeg/
+.venv

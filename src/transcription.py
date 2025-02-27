@@ -2,8 +2,11 @@ import os
 import torch
 import pandas as pd
 import time
-import whisperx
-from whisperx.audio import SAMPLE_RATE, log_mel_spectrogram, N_SAMPLES
+#import whisperx
+#from whisperx.audio import SAMPLE_RATE, log_mel_spectrogram, N_SAMPLES
+
+from transformers import pipeline
+
 
 from data.const import data_leaks
 
@@ -46,8 +49,8 @@ def detect_language(audio, model):
 
 
 def transcribe(
-    complete_name,
-    model,
+    audio,
+    pipeline,
     diarize_model,
     device,
     num_speaker,
@@ -60,43 +63,46 @@ def transcribe(
     torch.cuda.empty_cache()
 
     # Convert audio given a file path.
-    audio = whisperx.load_audio(complete_name)
+    #audio = whisperx.load_audio(complete_name)
 
     start_time = time.time()
 
     if len(hotwords) > 0:
         model.options = model.options._replace(prefix=" ".join(hotwords))
     print("Transcribing...")
+    print(audio)
     if DEVICE == "mps":
         import mlx_whisper
 
         decode_options = {"language": None, "prefix": " ".join(hotwords)}
 
         result1 = mlx_whisper.transcribe(
-            complete_name,
+            audio,
             path_or_hf_repo="mlx-community/whisper-large-v3-mlx",
             **decode_options,
         )
     else:
-        result1 = model.transcribe(audio, batch_size=batch_size, language=language)
+        #result1 = model.transcribe(audio, batch_size=batch_size, language=language)
+        result1 = pipeline(audio)
 
     print(f"Transcription took {time.time() - start_time:.2f} seconds.")
     if len(hotwords) > 0:
         model.options = model.options._replace(prefix=None)
 
     # Align whisper output.
-    model_a, metadata = whisperx.load_align_model(language_code=result1["language"], device=device)
+    #model_a, metadata = whisperx.load_align_model(language_code=result1["language"], device=device)
     start_aligning = time.time()
 
     print("Aligning...")
-    result2 = whisperx.align(
-        result1["segments"],
-        model_a,
-        metadata,
-        audio,
-        device,
-        return_char_alignments=False,
-    )
+    #result2 = whisperx.align(
+    #    result1["segments"],
+    #    model_a,
+    #    metadata,
+    #    audio,
+    #    device,
+    #    return_char_alignments=False,
+    #)
+    result2 = ""
 
     print(f"Alignment took {time.time() - start_aligning:.2f} seconds.")
 

@@ -5,7 +5,6 @@ import fnmatch
 import types
 import ffmpeg
 import torch
-import whisperx
 import zipfile
 import logging
 
@@ -17,6 +16,9 @@ from src.viewer import create_viewer
 from src.srt import create_srt
 from src.transcription import transcribe, get_prompt
 from src.util import time_estimate, isolate_voices
+
+# Load model directly
+from transformers import AutoProcessor, AutoModelForSpeechSeq2Seq, pipeline
 
 # Load environment variables
 load_dotenv()
@@ -154,7 +156,7 @@ def transcribe_file(file_name, multi_mode=False, multi_mode_track=None, audio_fi
     try:
         data = transcribe(
             file_name_out,
-            model,
+            pipe,
             diarize_model,
             DEVICE,
             None,
@@ -170,8 +172,6 @@ def transcribe_file(file_name, multi_mode=False, multi_mode_track=None, audio_fi
         report_error(file_name, file_name_error, user_id, "Transkription fehlgeschlagen")
 
     return data, estimated_time, progress_file_name
-
-
 if __name__ == "__main__":
     WHISPER_DEVICE = "cpu" if DEVICE == "mps" else DEVICE
     if WHISPER_DEVICE == "cpu":
@@ -179,18 +179,56 @@ if __name__ == "__main__":
     else:
         compute_type = "float16"
 
+    torch_dtype = torch.float16 if torch.cuda.is_available() else torch.float32
     # Load models
     whisperx_model = (
         "tiny.en" if DEVICE == "mps" else "large-v3"
     )  # we can load a really small one for mps, because we use mlx_whisper later and only need whisperx for diarization and alignment
     if ONLINE:
-        model = whisperx.load_model(whisperx_model, WHISPER_DEVICE, compute_type=compute_type)
+        #model = whisperx.load_model(whisperx_model, WHISPER_DEVICE, compute_type=compute_type)
+        
+        model_id = os.getenv("ASR_MODEL_ID")
+
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
+        )
+        model.to(DEVICE)
+
+        processor = AutoProcessor.from_pretrained(model_id)
+
+        pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            torch_dtype=torch_dtype,
+            device=DEVICE,
+            return_timestamps=True
+        )
     else:
-        model = whisperx.load_model(
-            whisperx_model,
-            WHISPER_DEVICE,
-            compute_type=compute_type,
-            download_root=join("models", "whisperx"),
+        #model = whisperx.load_model(
+        #    whisperx_model,
+        #    WHISPER_DEVICE,
+        #    compute_type=compute_type,
+        #    download_root=join("models", "whisperx"),
+        #)
+        model_id = os.getenv("ASR_MODEL_ID")
+
+        model = AutoModelForSpeechSeq2Seq.from_pretrained(
+            model_id, torch_dtype=torch_dtype, low_cpu_mem_usage=True, use_safetensors=True
+        )
+        model.to(DEVICE)
+
+        processor = AutoProcessor.from_pretrained(model_id)
+
+        pipe = pipeline(
+            "automatic-speech-recognition",
+            model=model,
+            tokenizer=processor.tokenizer,
+            feature_extractor=processor.feature_extractor,
+            torch_dtype=torch_dtype,
+            device=DEVICE,
+            return_timestamps=True
         )
 
     model.model.get_prompt = types.MethodType(get_prompt, model.model)
