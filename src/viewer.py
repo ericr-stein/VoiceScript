@@ -76,7 +76,7 @@ def meta_data(file_name, encode_base64):
 
 def speaker_information(data):
     content = '\t\t\t\t<div style="margin-top:10px;" class="viewer-hidden">\n'
-    speakers = sorted(set([segment["speaker"] for segment in data if segment["speaker"] is not "unknown"]))
+    speakers = sorted(set([segment["speaker"] for segment in data if segment["speaker"] != "unknown"]))
 
     n_speakers = len(speakers)
     for i in range(ADDITIONAL_SPEAKERS):
@@ -84,7 +84,7 @@ def speaker_information(data):
     speakers.append("unknown")
 
     for idx, speaker in enumerate(speakers):
-        if speaker is not "unknown":
+        if speaker != "unknown":
             content += f'\t\t\t\t\t<span contenteditable="true" class="form-control" id="IN_SPEAKER_{str(idx).zfill(2)}" style="margin-top:4px;">Person {speaker[-2:]}</span>\n'
     content += "\t\t\t\t<br><br><br><br><br></div>\n"
     content += "\t\t\t\t</div>\n"
@@ -117,7 +117,7 @@ def transcript(data, combine_speaker, language):
     content = '\t\t<div class="col-md-6" style="width: 60%; max-width: 90ch; z-index: 1; margin-left: auto; margin-right: auto">\n'
     content += '\t\t\t<div class="wrapper" style="margin: 0.5rem auto 0; max-width: 80ch;" id="editor">\n'
 
-    speakers = sorted(set([segment["speaker"] for segment in data if segment["speaker"] is not "unknown"]))
+    speakers = sorted(set([segment["speaker"] for segment in data if segment["speaker"] != "unknown"]))
     n_speakers = len(speakers)
     for i in range(ADDITIONAL_SPEAKERS):
         speakers.append(str(n_speakers + i).zfill(2))
@@ -126,7 +126,7 @@ def transcript(data, combine_speaker, language):
     table_elements = ""
     last_speaker = None
     for segment in data:
-        if segment["speaker"] not in speaker_order and segment["speaker"] is not "unknown":
+        if segment["speaker"] not in speaker_order and segment["speaker"] != "unknown":
             speaker_order.append(segment["speaker"])
 
     for i in range(ADDITIONAL_SPEAKERS):
@@ -187,7 +187,7 @@ def transcript(data, combine_speaker, language):
 
 
 def javascript(data, file_path, encode_base64, file_name):
-    speakers = sorted(set([segment["speaker"] for segment in data if segment["speaker"] is not "unknown"]))
+    speakers = sorted(set([segment["speaker"] for segment in data if segment["speaker"] != "unknown"]))
     n_speakers = len(speakers)
     for i in range(ADDITIONAL_SPEAKERS):
         speakers.append(str(n_speakers + i).zfill(2))
@@ -195,13 +195,13 @@ def javascript(data, file_path, encode_base64, file_name):
 
     speakers_array = "var speakers = Array("
     for idx, speaker in enumerate(speakers):
-        if speaker is not "unknown":
+        if speaker != "unknown":
             speakers_array += f'"IN_SPEAKER_{str(idx).zfill(2)}", '
     if len(speakers) > 1:
         speakers_array = speakers_array[:-2] + ")"
     else:
         speakers_array += ")"
-    number_of_speakers = len(set([segment["speaker"] for segment in data if segment["speaker"] is not "unknown"]))
+    number_of_speakers = len(set([segment["speaker"] for segment in data if segment["speaker"] != "unknown"]))
     content = """<script language="javascript">\n"""
     content += f'var fileName = "{file_name.split(".")[0]}"\n'
     content += """var source = Array(null, null, null, null, null)

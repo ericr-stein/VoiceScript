@@ -2,11 +2,10 @@ services:
   transcriber:
     image: yanick/audiotranscription:latest
     build:
-      dockerfile: dockerfile
+      dockerfile: Dockerfile
       context: .
       platforms:
         - linux/amd64
-        - linux/arm64
     restart: unless-stopped
     ports:
       - 8080:8080

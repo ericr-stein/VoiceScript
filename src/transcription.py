@@ -2,10 +2,37 @@ import os
 import torch
 import pandas as pd
 import time
-#import whisperx
-#from whisperx.audio import SAMPLE_RATE, log_mel_spectrogram, N_SAMPLES
+import subprocess
+import numpy as np
+import whisperx
+from whisperx.audio import SAMPLE_RATE, log_mel_spectrogram, N_SAMPLES
 
+# Keep transformers import as it's needed for PyAnnote
 from transformers import pipeline
+
+def custom_ffmpeg_read(file_path, sampling_rate):
+    """Read audio file using ffmpeg with video stream removal."""
+    ffmpeg_command = [
+        "ffmpeg", "-i", file_path,
+        "-vn",  # Explicitly ignore video streams
+        "-ac", "1", "-ar", str(sampling_rate),
+        "-f", "f32le", "-hide_banner", "-loglevel", "quiet",
+        "pipe:1"
+    ]
+    
+    try:
+        with subprocess.Popen(ffmpeg_command, stdout=subprocess.PIPE, stderr=subprocess.PIPE) as proc:
+            stdout, stderr = proc.communicate()
+            if proc.returncode != 0:
+                raise ValueError(f"FFmpeg error: {stderr.decode('utf-8')}")
+            
+            # Convert to numpy array
+            audio = np.frombuffer(stdout, dtype=np.float32)
+            if audio.shape[0] == 0:
+                raise ValueError("No audio stream found in file or file is not a valid audio format")
+            return audio
+    except Exception as e:
+        raise ValueError(f"Error reading audio file: {str(e)}")
 
 
 from data.const import data_leaks
@@ -62,6 +89,9 @@ def transcribe(
 ):
     torch.cuda.empty_cache()
 
+    # Define sample rate for audio processing
+    SAMPLE_RATE = 16000  # Standard for whisper models
+    
     # Convert audio given a file path.
     #audio = whisperx.load_audio(complete_name)
 
@@ -82,27 +112,44 @@ def transcribe(
             **decode_options,
         )
     else:
-        #result1 = model.transcribe(audio, batch_size=batch_size, language=language)
-        result1 = pipeline(audio)
+        try:
+            print(f"Processing audio using custom ffmpeg_read with -vn flag support...")
+            # First convert audio file using our custom function for MP4 support
+            audio_array = custom_ffmpeg_read(audio, SAMPLE_RATE)
+            print(f"Audio processed successfully, shape: {audio_array.shape}")
+            
+            # Then use WhisperX with the pre-processed audio
+            print(f"Running WhisperX transcription with audio_array...")
+            result1 = model.transcribe(audio_array, batch_size=batch_size, language=language)
+            print(f"WhisperX transcription completed successfully")
+        except Exception as e:
+            print(f"Error during transcription: {str(e)}")
+            raise
 
     print(f"Transcription took {time.time() - start_time:.2f} seconds.")
     if len(hotwords) > 0:
         model.options = model.options._replace(prefix=None)
 
     # Align whisper output.
-    #model_a, metadata = whisperx.load_align_model(language_code=result1["language"], device=device)
-    start_aligning = time.time()
+    try:
+        print(f"Loading alignment model for language: {result1['language']}...")
+        model_a, metadata = whisperx.load_align_model(language_code=result1["language"], device=device)
+        start_aligning = time.time()
 
-    print("Aligning...")
-    #result2 = whisperx.align(
-    #    result1["segments"],
-    #    model_a,
-    #    metadata,
-    #    audio,
-    #    device,
-    #    return_char_alignments=False,
-    #)
-    result2 = ""
+        print("Aligning transcription with audio...")
+        result2 = whisperx.align(
+            result1["segments"],
+            model_a,
+            metadata,
+            audio_array,
+            device,
+            return_char_alignments=False,
+        )
+        print(f"Alignment completed successfully")
+    except Exception as e:
+        print(f"Error during alignment: {str(e)}")
+        # Fallback to use the result1 format directly to avoid breaking the pipeline
+        result2 = {"segments": result1["segments"]}
 
     print(f"Alignment took {time.time() - start_aligning:.2f} seconds.")
 
@@ -128,21 +175,32 @@ def transcribe(
     # Diarize and assign speaker labels.
     start_diarize = time.time()
     print("Diarizing...")
-    audio_data = {
-        "waveform": torch.from_numpy(audio[None, :]),
-        "sample_rate": SAMPLE_RATE,
-    }
+    
+    try:
+        # Use the audio_array from our custom processing
+        audio_data = {
+            "waveform": torch.from_numpy(audio_array[None, :]),
+            "sample_rate": SAMPLE_RATE,
+        }
 
-    if multi_mode_track is None:
-        segments = diarize_model(audio_data, num_speakers=num_speaker)
+        if multi_mode_track is None:
+            print(f"Running speaker diarization...")
+            segments = diarize_model(audio_data, num_speakers=num_speaker)
 
-        diarize_df = pd.DataFrame(segments.itertracks(yield_label=True), columns=["segment", "label", "speaker"])
-        diarize_df["start"] = diarize_df["segment"].apply(lambda x: x.start)
-        diarize_df["end"] = diarize_df["segment"].apply(lambda x: x.end)
-        result3 = whisperx.assign_word_speakers(diarize_df, result2)
-    else:
-        for segment in result2["segments"]:
-            segment["speaker"] = "SPEAKER_" + str(multi_mode_track).zfill(2)
+            diarize_df = pd.DataFrame(segments.itertracks(yield_label=True), columns=["segment", "label", "speaker"])
+            diarize_df["start"] = diarize_df["segment"].apply(lambda x: x.start)
+            diarize_df["end"] = diarize_df["segment"].apply(lambda x: x.end)
+            
+            print(f"Assigning speakers to words...")
+            result3 = whisperx.assign_word_speakers(diarize_df, result2)
+            print(f"Speaker diarization completed successfully")
+        else:
+            for segment in result2["segments"]:
+                segment["speaker"] = "SPEAKER_" + str(multi_mode_track).zfill(2)
+            result3 = result2
+    except Exception as e:
+        print(f"Error during diarization: {str(e)}")
+        # Fallback to simple structure if diarization fails
         result3 = result2
 
     print(f"Diarization took {time.time() - start_diarize:.2f} seconds.")

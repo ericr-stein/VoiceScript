@@ -11,3 +11,5 @@ data/worker/
 models/
 ffmpeg/
 .venv
+.clinerules
+memory-bank
