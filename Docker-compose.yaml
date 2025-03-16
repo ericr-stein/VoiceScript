@@ -1,6 +1,6 @@
 services:
   transcriber:
-    image: yanick/audiotranscription:latest
+    image: audiotranscription:latest
     build:
       dockerfile: Dockerfile
       context: .

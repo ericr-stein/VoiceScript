@@ -167,6 +167,7 @@ def transcribe_file(file_name, multi_mode=False, multi_mode_track=None, audio_fi
             hotwords=hotwords,
             multi_mode_track=multi_mode_track,
             language=language,
+            model=model,  # Pass the WhisperX model
         )
     except Exception as e:
         logger.exception("Transcription failed")

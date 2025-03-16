@@ -573,7 +573,7 @@ async def main_page():
                     .classes("w-full no-wrap")
                     .style("width: min(40vw, 400px)")
                 ):
-                    ui.label("Diese Prototyp-Applikation wurde vom Statistischen Amt Kanton Zürich entwickelt.")
+                    ui.label("Diese Prototyp-Applikation wurde vom Statistischen Amt & Amt für Informatik Kanton Zürich entwickelt.")
                 ui.button(
                     "Anleitung öffnen",
                     on_click=lambda: ui.open(help_page, new_tab=True),

@@ -6,6 +6,7 @@ import subprocess
 import numpy as np
 import whisperx
 from whisperx.audio import SAMPLE_RATE, log_mel_spectrogram, N_SAMPLES
+from dataclasses import replace
 
 # Keep transformers import as it's needed for PyAnnote
 from transformers import pipeline
@@ -30,7 +31,8 @@ def custom_ffmpeg_read(file_path, sampling_rate):
             audio = np.frombuffer(stdout, dtype=np.float32)
             if audio.shape[0] == 0:
                 raise ValueError("No audio stream found in file or file is not a valid audio format")
-            return audio
+            # Return a copy to ensure the array is writable (fixes PyTorch tensor conversion warnings)
+            return audio.copy()
     except Exception as e:
         raise ValueError(f"Error reading audio file: {str(e)}")
 
@@ -86,6 +88,7 @@ def transcribe(
     batch_size=4,
     multi_mode_track=None,
     language="de",
+    model=None,  # Add model parameter with default None
 ):
     torch.cuda.empty_cache()
 
@@ -98,7 +101,7 @@ def transcribe(
     start_time = time.time()
 
     if len(hotwords) > 0:
-        model.options = model.options._replace(prefix=" ".join(hotwords))
+        model.options = replace(model.options, prefix=" ".join(hotwords))
     print("Transcribing...")
     print(audio)
     if DEVICE == "mps":
@@ -128,7 +131,7 @@ def transcribe(
 
     print(f"Transcription took {time.time() - start_time:.2f} seconds.")
     if len(hotwords) > 0:
-        model.options = model.options._replace(prefix=None)
+        model.options = replace(model.options, prefix=None)
 
     # Align whisper output.
     try:
@@ -157,9 +160,9 @@ def transcribe(
         start_language = time.time()
         print("Adding language...")
         for segment in result2["segments"]:
-            start = (int(segment["start"]) * 16_000) - 8_000
-            end = ((int(segment["end"]) + 1) * 16_000) + 8_000
-            segment_audio = audio[start:end]
+            start = max(0, (int(segment["start"]) * 16_000) - 8_000)
+            end = min(len(audio_array), ((int(segment["end"]) + 1) * 16_000) + 8_000)
+            segment_audio = audio_array[start:end]
             if DEVICE == "mps":
                 ## This is a workaround to use the whisper model in mps, it doesn't have "detect language" method
                 decode_options = {"language": None, "prefix": " ".join(hotwords)}
