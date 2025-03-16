@@ -1,20 +1,33 @@
 services:
   transcriber:
     image: audiotranscription:latest
+    container_name: Transcribo
     build:
       dockerfile: Dockerfile
       context: .
       platforms:
         - linux/amd64
-    restart: unless-stopped
     ports:
-      - 8080:8080
+      - "8080:8080"
     volumes:
       - hugging_face_cache:/root/.cache/huggingface
-    develop:
-      watch:
-        - path: faster_whisper_server
-          action: rebuild
+      - ./data:/app/data
+    labels:
+      # Enable Traefik
+      - "traefik.enable=true"
+      
+      # Router configuration
+      - "traefik.http.routers.audiotranscription.rule=Host(`sp000200-t2.kt.ktzh.ch`)"
+      - "traefik.http.routers.audiotranscription.entrypoints=web"
+      - "traefik.http.routers.audiotranscription.middlewares=audiotranscription-auth"
+      
+      # Service configuration
+      - "traefik.http.services.audiotranscription.loadbalancer.server.port=8080"
+      
+      # Basic Auth middleware - username/password (default: admin/password)
+      - "traefik.http.middlewares.audiotranscription-auth.basicauth.users=admin:$$2y$$05$$l6arJ1nJb13q63YGaM.uCOjxE3QYbpXjQTelU1vkJdLz4vLIriTyq"
+    networks:
+      - traefik_network
     deploy:
       resources:
         reservations:
@@ -22,5 +35,11 @@ services:
             - driver: nvidia
               count: 1
               capabilities: ["gpu"]
+    restart: unless-stopped
+
 volumes:
   hugging_face_cache:
+
+networks:
+  traefik_network:
+    external: true
