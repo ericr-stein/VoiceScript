@@ -23,8 +23,22 @@ load_dotenv()
 ONLINE = os.getenv("ONLINE") == "True"
 STORAGE_SECRET = os.getenv("STORAGE_SECRET")
 ROOT = os.getenv("ROOT")
+# Provide fallbacks for ROOT if it's not set
+if ROOT is None:
+    # Try to determine the root directory automatically
+    if os.path.exists(os.path.join(os.path.dirname(__file__), "data", "logo.png")):
+        # If executed directly
+        ROOT = os.path.dirname(__file__)
+    elif os.path.exists("data/logo.png"):
+        # If executed from project directory
+        ROOT = os.getcwd()
+    else:
+        # Final fallback - just use current directory
+        ROOT = os.getcwd()
+        print(f"WARNING: ROOT environment variable not set. Using {ROOT} as fallback.")
+
 WINDOWS = os.getenv("WINDOWS") == "True"
-SSL_CERTFILE = os.getenv("SSL_CERTFILE")
+SSL_CERTFILE = os.getenv("SSL_CERTFILE") 
 SSL_KEYFILE = os.getenv("SSL_KEYFILE")
 
 if WINDOWS:
