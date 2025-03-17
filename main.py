@@ -339,43 +339,7 @@ async def download_srt(file_name, user_id):
         ui.notify(f"Download error: {str(e)}", color="negative")
 
 
-# Secure file serving endpoint - IMPROVED
-@ui.page("/secure-media/{requested_user_id}/{filename}")
-async def serve_secure_media(requested_user_id: str, filename: str):
-    """Serve media files securely after verifying user permissions."""
-    try:
-        # Get current user's ID from their session
-        current_user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
-        
-        # For production, we should re-enable this security check:
-        # if current_user_id != requested_user_id:
-        #     return "Access denied: You can only access your own files", 403
-        
-        # If verified, serve the file
-        file_path = join(ROOT, "data", "out", requested_user_id, filename)
-        
-        if not isfile(file_path):
-            return f"File not found: {filename}", 404
-        
-        # Determine content type based on file extension
-        content_type = "video/mp4"  # Default for most of our files
-        if filename.lower().endswith((".mp3", ".wav")):
-            content_type = "audio/mpeg" if filename.lower().endswith(".mp3") else "audio/wav"
-        
-        # Use a more direct approach for streaming media
-        # Read the file in binary mode and return it directly with appropriate headers
-        with open(file_path, 'rb') as f:
-            content = f.read()
-            
-        # Return with proper streaming headers
-        return content, 200, {
-            "Content-Type": content_type,
-            "Accept-Ranges": "bytes",  # Important for streaming
-            "Content-Disposition": f"inline; filename={filename}",  # Ensures browser plays rather than downloads
-            "Cache-Control": "public, max-age=3600"  # Allow caching for better performance
-        }
-    except Exception as e:
-        return f"Error serving media: {str(e)}", 500
+# We will use NiceGUI's built-in static file serving instead of a custom endpoint
 
 
 async def open_editor(file_name, user_id):
@@ -384,8 +348,8 @@ async def open_editor(file_name, user_id):
     with open(full_file_name, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Use secure endpoint instead of direct file path
-    video_path = f"/secure-media/{user_id}/{file_name}.mp4"
+    # Use the static file serving path instead of secure endpoint
+    video_path = f"/media/{user_id}/{file_name}.mp4"
     content = content.replace(
         '<video id="player" width="100%" style="max-height: 320px" src="" type="video/MP4" controls="controls" position="sticky"></video>',
         f'<video id="player" width="100%" style="max-height: 320px" src="{video_path}" type="video/MP4" controls="controls" position="sticky"></video>',
@@ -840,6 +804,10 @@ async def main_page():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
+    # Configure static file serving for media files
+    # This makes all files in the 'data/out' directory accessible via /media URL
+    app.add_static_files('/media', join(ROOT, 'data', 'out'))
+    
     if ONLINE:
         ui.run(
             port=8080,
