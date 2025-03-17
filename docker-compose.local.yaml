@@ -1,0 +1,63 @@
+services:
+  transcriber:
+    image: transcribo:latest
+    build:
+      dockerfile: Dockerfile
+      context: .
+      platforms:
+        - linux/amd64
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    volumes:
+      - hugging_face_cache:/root/.cache/huggingface
+      - ./data:/app/data
+    networks:
+      - monitoring_network
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: ["gpu"]
+  
+  # Monitoring services for local development
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus-local
+    volumes:
+      - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus_data:/prometheus
+    ports:
+      - "9090:9090"
+    networks:
+      - monitoring_network
+    restart: unless-stopped
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana-local
+    volumes:
+      - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
+      - grafana_data:/var/lib/grafana
+    environment:
+      - GF_AUTH_ANONYMOUS_ENABLED=true
+      - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
+      - GF_AUTH_BASIC_ENABLED=false
+      - GF_USERS_ALLOW_SIGN_UP=false
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+    networks:
+      - monitoring_network
+    restart: unless-stopped
+              
+volumes:
+  hugging_face_cache:
+  prometheus_data:
+  grafana_data:
+
+networks:
+  monitoring_network:
