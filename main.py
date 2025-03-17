@@ -101,16 +101,19 @@ def read_files(user_id):
 
         # Get the global processing queue
         global_queue = get_global_processing_queue()
+        queue_size = len(global_queue)
         
-        # Update each file's wait time based on its position in the global queue
+        # Update each file's wait time and queue position based on its position in the global queue
         for file_status in user_storage[user_id]["file_list"]:
             if file_status[2] < 100.0:  # Only for incomplete files
                 wait_time = 0
+                queue_position = 0
                 file_found = False
                 
-                # Sum up processing times for all files ahead in the queue
-                for queued_file in global_queue:
+                # Calculate position in queue and sum up processing times for all files ahead
+                for i, queued_file in enumerate(global_queue):
                     if queued_file["user_id"] == user_id and queued_file["filename"] == file_status[0]:
+                        queue_position = i + 1  # Position is 1-based for user display
                         file_found = True
                         # For the file itself, only count remaining time based on progress
                         if queued_file["progress"] > 0:
@@ -123,9 +126,14 @@ def read_files(user_id):
                         # For files ahead in queue, count full estimated time
                         wait_time += queued_file["estimated_time"]
                         
-                # Format and update the wait time display
+                # Format and update the wait time and queue position display
                 wait_time_str = str(datetime.timedelta(seconds=round(wait_time)))
-                file_status[1] = f"Datei in Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
+                
+                # Different message for actively processed file (first in queue) vs waiting
+                if queue_position == 1 and file_found:
+                    file_status[1] = f"Wird verarbeitet. Geschätzte Restzeit: {wait_time_str}"
+                else:
+                    file_status[1] = f"Position {queue_position} von {queue_size} in Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
 
     if os.path.exists(error_path):
         for f in listdir(error_path):
@@ -288,8 +296,6 @@ async def download_editor(file_name, user_id):
             ui.notify("Error: Generated file is empty", color="negative")
             return
             
-        print(f"DEBUG: Downloading HTML editor file: {final_file_name}, size: {file_size} bytes")
-        
         # Use direct src parameter instead of content - more reliable approach for this app
         download_filename = f"{os.path.splitext(file_name)[0]}.html"
         ui.download(
@@ -301,7 +307,6 @@ async def download_editor(file_name, user_id):
         ui.notify(f"Download started: {download_filename}", color="positive")
     except Exception as e:
         # Handle any unexpected errors
-        print(f"DEBUG: Download error: {str(e)}")
         ui.notify(f"Download error: {str(e)}", color="negative")
 
 
@@ -320,8 +325,6 @@ async def download_srt(file_name, user_id):
             ui.notify("Error: SRT file is empty", color="negative")
             return
             
-        print(f"DEBUG: Downloading SRT file: {srt_file}, size: {file_size} bytes")
-        
         # Use direct src parameter instead of content - more reliable approach for this app
         download_filename = f"{os.path.splitext(file_name)[0]}.srt"
         ui.download(
@@ -333,7 +336,6 @@ async def download_srt(file_name, user_id):
         ui.notify(f"Download started: {download_filename}", color="positive")
     except Exception as e:
         # Handle any unexpected errors
-        print(f"DEBUG: Download error: {str(e)}")
         ui.notify(f"Download error: {str(e)}", color="negative")
 
 
@@ -342,45 +344,37 @@ async def download_srt(file_name, user_id):
 async def serve_secure_media(requested_user_id: str, filename: str):
     """Serve media files securely after verifying user permissions."""
     try:
-        # Print debugging information
-        print(f"DEBUG: Secure media request for user:{requested_user_id}, file:{filename}")
-        
         # Get current user's ID from their session
         current_user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
-        print(f"DEBUG: Current user ID: {current_user_id}")
         
-        # Security check: only allow users to access their own files
-        # For debugging purposes, temporarily disable this check
+        # For production, we should re-enable this security check:
         # if current_user_id != requested_user_id:
-        #     print(f"DEBUG: Access denied - user mismatch")
         #     return "Access denied: You can only access your own files", 403
         
         # If verified, serve the file
         file_path = join(ROOT, "data", "out", requested_user_id, filename)
-        print(f"DEBUG: Looking for file at: {file_path}")
         
         if not isfile(file_path):
-            print(f"DEBUG: File not found: {file_path}")
             return f"File not found: {filename}", 404
-        
-        print(f"DEBUG: File found, size: {os.path.getsize(file_path)} bytes")
         
         # Determine content type based on file extension
         content_type = "video/mp4"  # Default for most of our files
         if filename.lower().endswith((".mp3", ".wav")):
             content_type = "audio/mpeg" if filename.lower().endswith(".mp3") else "audio/wav"
         
-        # Use ui.download with src parameter for more reliable serving
-        # But configure it for direct display, not download
-        # This is a more reliable method for media serving
-        return ui.download(
-            src=file_path,
-            filename=filename,
-            content_type=content_type,
-            download=False  # Important: Don't trigger download, stream for playback
-        )
+        # Use a more direct approach for streaming media
+        # Read the file in binary mode and return it directly with appropriate headers
+        with open(file_path, 'rb') as f:
+            content = f.read()
+            
+        # Return with proper streaming headers
+        return content, 200, {
+            "Content-Type": content_type,
+            "Accept-Ranges": "bytes",  # Important for streaming
+            "Content-Disposition": f"inline; filename={filename}",  # Ensures browser plays rather than downloads
+            "Cache-Control": "public, max-age=3600"  # Allow caching for better performance
+        }
     except Exception as e:
-        print(f"DEBUG: Error in secure media endpoint: {str(e)}")
         return f"Error serving media: {str(e)}", 500
 
 
@@ -439,8 +433,6 @@ async def download_all(user_id):
             ui.notify("Error creating zip file", color="negative")
             return
             
-        print(f"DEBUG: Downloading ZIP file: {zip_file_path}, size: {os.path.getsize(zip_file_path)} bytes")
-        
         # Use direct src parameter instead of content - more reliable approach for this app
         ui.download(
             src=zip_file_path,  # Direct source path instead of loading content
@@ -458,7 +450,6 @@ async def download_all(user_id):
             
     except Exception as e:
         # Handle any unexpected errors
-        print(f"DEBUG: Download error: {str(e)}")
         ui.notify(f"Download error: {str(e)}", color="negative")
 
 
@@ -482,21 +473,16 @@ def delete_file(file_name, user_id, refresh_file_view):
 def listen(user_id, refresh_file_view):
     """Periodically check if a file is being transcribed and calculate its estimated progress."""
     worker_user_dir = join(ROOT, "data", "worker", user_id)
-    print(f"DEBUG: Checking worker directory: {worker_user_dir}")
     
     if os.path.exists(worker_user_dir):
-        print(f"DEBUG: Worker directory exists, checking for files")
         worker_files = listdir(worker_user_dir)
-        print(f"DEBUG: Found {len(worker_files)} files in worker directory")
         
         for f in worker_files:
             file_path = join(worker_user_dir, f)
-            print(f"DEBUG: Checking file: {file_path}")
             
             if isfile(file_path):
                 parts = f.split("_")
                 if len(parts) < 3:
-                    print(f"DEBUG: Invalid progress file format: {f}")
                     continue
                     
                 estimated_time = float(parts[0])
@@ -504,7 +490,6 @@ def listen(user_id, refresh_file_view):
                 file_name = "_".join(parts[2:])
                 progress = min(0.975, (time.time() - start) / estimated_time)
                 estimated_time_left = round(max(1, estimated_time - (time.time() - start)))
-                print(f"DEBUG: Progress calculation: {progress*100:.2f}%, Estimated time left: {estimated_time_left}s")
 
                 in_file = join(ROOT, "data", "in", user_id, file_name)
                 if os.path.exists(in_file):
@@ -514,7 +499,6 @@ def listen(user_id, refresh_file_view):
                     else:
                         status_message = f"Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}"
                     
-                    print(f"DEBUG: Setting update for file {file_name}: {status_message}")
                     user_storage[user_id]["updates"] = [
                         file_name,
                         status_message,
@@ -527,18 +511,12 @@ def listen(user_id, refresh_file_view):
                     updated = False
                     for i, file_status in enumerate(user_storage[user_id]["file_list"]):
                         if file_status[0] == file_name:
-                            print(f"DEBUG: Updating file_list entry for {file_name} with progress {progress*100:.2f}%")
                             user_storage[user_id]["file_list"][i] = user_storage[user_id]["updates"]
                             updated = True
                             break
-                    
-                    if not updated:
-                        print(f"DEBUG: WARNING: File {file_name} not found in file_list, update not persisted!")
                 else:
-                    print(f"DEBUG: Input file no longer exists, removing progress file: {file_path}")
                     os.remove(file_path)
                     
-                print(f"DEBUG: Triggering UI refresh for user {user_id}")
                 refresh_file_view(
                     user_id=user_id,
                     refresh_queue=True,
@@ -548,14 +526,11 @@ def listen(user_id, refresh_file_view):
                 return
 
         # No files being processed
-        print(f"DEBUG: No progress files found in worker directory")
         if user_storage[user_id].get("updates"):
-            print(f"DEBUG: Clearing previous updates")
             user_storage[user_id]["updates"] = []
             user_storage[user_id]["file_in_progress"] = None
             refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
         else:
-            print(f"DEBUG: No updates to clear, refreshing queue only")
             refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
 
 
@@ -824,124 +799,10 @@ async def main_page():
                         )
 
                 ui.label("")
-                # Add debugging button and display ROOT path info
-                ui.label(f"DEBUG: ROOT path is {ROOT}")
-                ui.label(f"DEBUG: Worker directory is {join(ROOT, 'data', 'worker')}")
                 
-                def debug_trigger():
-                    print("DEBUG: Manual refresh triggered")
-                    listen(user_id=user_id, refresh_file_view=refresh_file_view)
-                    ui.notify("Manual refresh triggered", color="info")
-                
-                # Add more comprehensive debugging tools
-                with ui.expansion("Debugging Tools", icon="bug_report").classes("w-full"):
-                    ui.button(
-                        "Trigger Manual Refresh", 
-                        on_click=debug_trigger,
-                        color="warning"
-                    ).props("no-caps")
-                    
-                    # Add diagnostic button
-                    def show_diagnostics():
-                        result = inspect_docker_container(user_id)
-                        ui.notify("Diagnostics complete", color="info")
-                        
-                        # Create a dialog to display diagnostic info
-                        with ui.dialog() as dialog, ui.card():
-                            ui.label("System Diagnostics").classes("text-h6")
-                            ui.separator()
-                            ui.markdown(f"```\n{result}\n```")
-                            ui.button("Close", on_click=dialog.close)
-                        dialog.open()
-                    
-                    ui.button(
-                        "Run System Diagnostics", 
-                        on_click=show_diagnostics,
-                        color="primary"
-                    ).props("no-caps")
-                    
-                    # Create a test progress file
-                    def create_test_progress(progress_percent=None):
-                        try:
-                            # Create a test progress file
-                            worker_user_dir = join(ROOT, "data", "worker", user_id)
-                            os.makedirs(worker_user_dir, exist_ok=True)
-                            
-                            # Check for input files
-                            in_dir = join(ROOT, "data", "in", user_id)
-                            if not os.path.exists(in_dir):
-                                ui.notify("No input directory found. Upload a file first.", color="negative")
-                                return
-                                
-                            files = [f for f in listdir(in_dir) if isfile(join(in_dir, f)) 
-                                    and f != "hotwords.txt" and f != "language.txt"]
-                            
-                            if not files:
-                                ui.notify("No input files found. Upload a file first.", color="negative")
-                                return
-                                
-                            # Create progress file for the first input file
-                            test_file = files[0]
-                            estimated_time = 600  # 10 minutes
-                            
-                            # If specific progress was requested, adjust start_time to show that progress
-                            if progress_percent is not None:
-                                # Calculate what start_time would give us this progress
-                                progress_ratio = min(0.975, progress_percent / 100.0)
-                                elapsed_time_needed = progress_ratio * estimated_time
-                                start_time = int(time.time()) - elapsed_time_needed
-                            else:
-                                # Default - start now (0% progress)
-                                start_time = int(time.time())
-                            
-                            # Clean up any existing progress files first
-                            for f in listdir(worker_user_dir):
-                                if test_file in f and isfile(join(worker_user_dir, f)):
-                                    os.remove(join(worker_user_dir, f))
-                            
-                            progress_file_name = join(worker_user_dir, f"{estimated_time}_{start_time}_{test_file}")
-                            with open(progress_file_name, "w") as f:
-                                f.write("")
-                            
-                            if progress_percent is not None:
-                                ui.notify(f"Created test progress file at {progress_percent}% for {test_file}", color="positive")
-                            else:
-                                ui.notify(f"Created test progress file for {test_file}", color="positive")
-                            
-                            # Trigger refresh
-                            listen(user_id=user_id, refresh_file_view=refresh_file_view)
-                        except Exception as e:
-                            ui.notify(f"Error creating test progress: {str(e)}", color="negative")
-                    
-                    # Add progress simulation buttons with different percentages
-                    with ui.row():
-                        ui.button(
-                            "Create 0% Progress", 
-                            on_click=lambda: create_test_progress(0),
-                            color="secondary"
-                        ).props("no-caps size=sm")
-                        
-                        ui.button(
-                            "25% Progress", 
-                            on_click=lambda: create_test_progress(25),
-                            color="secondary"
-                        ).props("no-caps size=sm")
-                        
-                        ui.button(
-                            "50% Progress", 
-                            on_click=lambda: create_test_progress(50),
-                            color="secondary"
-                        ).props("no-caps size=sm")
-                        
-                        ui.button(
-                            "95% Progress", 
-                            on_click=lambda: create_test_progress(95),
-                            color="secondary"
-                        ).props("no-caps size=sm")
-                
-                # Increase timer frequency for testing
+                # Quick timer for checking file progress
                 ui.timer(
-                    1,  # Check more frequently for debugging
+                    1,  # Check frequently for better responsiveness
                     partial(listen, user_id=user_id, refresh_file_view=refresh_file_view),
                 )
                 user_storage[user_id]["language"] = ui.select(
