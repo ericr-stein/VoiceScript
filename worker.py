@@ -225,9 +225,48 @@ if __name__ == "__main__":
         )
 
     model.model.get_prompt = types.MethodType(get_prompt, model.model)
-    diarize_model = Pipeline.from_pretrained(
-        "pyannote/speaker-diarization", use_auth_token=os.getenv("HF_AUTH_TOKEN")
-    ).to(torch.device(DEVICE))
+    
+    # Check for valid Hugging Face token
+    hf_token = os.getenv("HF_AUTH_TOKEN")
+    if not hf_token or hf_token == "hf_putyourtokenhere" or hf_token == "hf_YOUR_ACTUAL_TOKEN":
+        logger.error("""
+        ===================================================================
+        ERROR: Missing or invalid Hugging Face authentication token!
+        
+        The pyannote/speaker-diarization model requires a valid Hugging Face
+        token that has accepted the model's license agreement.
+        
+        Please follow these steps:
+        1. Create/login to your Hugging Face account at https://huggingface.co/
+        2. Go to Settings → Access Tokens → New token
+        3. Create a token with at least read access
+        4. Visit https://huggingface.co/pyannote/speaker-diarization 
+           and accept the user agreement for this model
+        5. Update your .env file with: HF_AUTH_TOKEN = "your_actual_token"
+        ===================================================================
+        """)
+        raise ValueError("Invalid Hugging Face token. Please check your .env file and update HF_AUTH_TOKEN.")
+    
+    try:
+        diarize_model = Pipeline.from_pretrained(
+            "pyannote/speaker-diarization", use_auth_token=hf_token
+        ).to(torch.device(DEVICE))
+    except Exception as e:
+        if "401 Client Error: Unauthorized" in str(e):
+            logger.error("""
+            ===================================================================
+            ERROR: Hugging Face authentication failed!
+            
+            Your token was rejected by Hugging Face. This could mean:
+            1. The token is invalid or expired
+            2. You haven't accepted the model's license agreement
+            
+            Please visit https://huggingface.co/pyannote/speaker-diarization
+            and make sure you're logged in and have accepted the user agreement.
+            Then check that your token in .env is correct and up to date.
+            ===================================================================
+            """)
+        raise
 
     # Create necessary directories
     for directory in ["data/in/", "data/out/", "data/error/", "data/worker/"]:

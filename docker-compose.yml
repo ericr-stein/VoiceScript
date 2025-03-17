@@ -17,12 +17,15 @@ services:
       - "traefik.enable=true"
       
       # Router configuration
-      - "traefik.http.routers.audiotranscription.rule=Host(`sp000200-t2.kt.ktzh.ch`)"
-      - "traefik.http.routers.audiotranscription.entrypoints=web"
+      - "traefik.http.routers.audiotranscription.rule=Host(`sp000200-t2.kt.ktzh.ch`) && PathPrefix(`/`)"
+      - "traefik.http.routers.audiotranscription.entrypoints=websecure"
       - "traefik.http.routers.audiotranscription.middlewares=audiotranscription-auth"
+      - "traefik.http.routers.audiotranscription.tls=true"
       
       # Service configuration
       - "traefik.http.services.audiotranscription.loadbalancer.server.port=8080"
+      # Add a priority to ensure root path is handled last
+      - "traefik.http.routers.audiotranscription.priority=1"
       
       # Basic Auth middleware - username/password (default: admin/password)
       - "traefik.http.middlewares.audiotranscription-auth.basicauth.users=admin:$$2y$$05$$l6arJ1nJb13q63YGaM.uCOjxE3QYbpXjQTelU1vkJdLz4vLIriTyq"
@@ -51,10 +54,13 @@ services:
       - traefik_network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.prometheus.rule=Host(`sp000200-t6.kt.ktzh.ch`)"
-      - "traefik.http.routers.prometheus.entrypoints=web"
-      - "traefik.http.routers.prometheus.middlewares=audiotranscription-auth"
+      - "traefik.http.routers.prometheus.rule=Host(`sp000200-t2.kt.ktzh.ch`) && PathPrefix(`/prometheus`)"
+      - "traefik.http.routers.prometheus.entrypoints=websecure"
+      - "traefik.http.routers.prometheus.middlewares=prometheus-strip,audiotranscription-auth"
+      - "traefik.http.routers.prometheus.tls=true"
+      - "traefik.http.middlewares.prometheus-strip.stripprefix.prefixes=/prometheus"
       - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
+      - "traefik.http.routers.prometheus.priority=10"
 
   grafana:
     image: grafana/grafana:latest
@@ -67,6 +73,9 @@ services:
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_AUTH_BASIC_ENABLED=false
       - GF_USERS_ALLOW_SIGN_UP=false
+      # Add Grafana base URL configuration
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana
+      - GF_SERVER_SERVE_FROM_SUB_PATH=true
     ports:
       - "3000:3000"
     depends_on:
@@ -75,10 +84,13 @@ services:
       - traefik_network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`sp000200-t7.kt.ktzh.ch`)"
-      - "traefik.http.routers.grafana.entrypoints=web"
-      - "traefik.http.routers.grafana.middlewares=audiotranscription-auth"
+      - "traefik.http.routers.grafana.rule=Host(`sp000200-t2.kt.ktzh.ch`) && PathPrefix(`/grafana`)"
+      - "traefik.http.routers.grafana.entrypoints=websecure"
+      - "traefik.http.routers.grafana.middlewares=grafana-strip,audiotranscription-auth"
+      - "traefik.http.routers.grafana.tls=true"
+      - "traefik.http.middlewares.grafana-strip.stripprefix.prefixes=/grafana"
       - "traefik.http.services.grafana.loadbalancer.server.port=3000"
+      - "traefik.http.routers.grafana.priority=10"
     restart: unless-stopped
 
 volumes:

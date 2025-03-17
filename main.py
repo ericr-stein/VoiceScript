@@ -49,6 +49,27 @@ BACKSLASHCHAR = "\\"
 user_storage = {}
 
 
+def get_global_processing_queue():
+    """Get all files currently in the processing queue across all users."""
+    all_queued_files = []
+    
+    # Find all incomplete files across all users
+    for u_id in user_storage:
+        for file_status in user_storage[u_id].get("file_list", []):
+            if 0 <= file_status[2] < 100.0:  # Incomplete files
+                all_queued_files.append({
+                    "user_id": u_id,
+                    "filename": file_status[0],
+                    "estimated_time": file_status[3],
+                    "upload_time": file_status[4],
+                    "progress": file_status[2]
+                })
+    
+    # Sort by upload time (oldest first) to match worker's processing order
+    all_queued_files.sort(key=lambda x: x["upload_time"])
+    return all_queued_files
+
+
 def read_files(user_id):
     """Read in all files of the user and set the file status if known."""
     user_storage[user_id]["file_list"] = []
@@ -78,23 +99,33 @@ def read_files(user_id):
 
                 user_storage[user_id]["file_list"].append(file_status)
 
-        files_in_queue = []
-        for u in user_storage:
-            for f in user_storage[u].get("file_list", []):
-                if (
-                    "updates" in user_storage[u]
-                    and len(user_storage[u]["updates"]) > 0
-                    and user_storage[u]["updates"][0] == f[0]
-                ):
-                    f = user_storage[u]["updates"]
-                if f[2] < 100.0:
-                    files_in_queue.append(f)
-
+        # Get the global processing queue
+        global_queue = get_global_processing_queue()
+        
+        # Update each file's wait time based on its position in the global queue
         for file_status in user_storage[user_id]["file_list"]:
-            estimated_wait_time = sum(f[3] for f in files_in_queue if f[4] < file_status[4])
-            if file_status[2] < 100.0:
-                wait_time_str = str(datetime.timedelta(seconds=round(estimated_wait_time + file_status[3])))
-                file_status[1] += wait_time_str
+            if file_status[2] < 100.0:  # Only for incomplete files
+                wait_time = 0
+                file_found = False
+                
+                # Sum up processing times for all files ahead in the queue
+                for queued_file in global_queue:
+                    if queued_file["user_id"] == user_id and queued_file["filename"] == file_status[0]:
+                        file_found = True
+                        # For the file itself, only count remaining time based on progress
+                        if queued_file["progress"] > 0:
+                            remaining_ratio = 1.0 - (queued_file["progress"] / 100.0)
+                            wait_time += queued_file["estimated_time"] * remaining_ratio
+                        else:
+                            wait_time += queued_file["estimated_time"]
+                        break
+                    else:
+                        # For files ahead in queue, count full estimated time
+                        wait_time += queued_file["estimated_time"]
+                        
+                # Format and update the wait time display
+                wait_time_str = str(datetime.timedelta(seconds=round(wait_time)))
+                file_status[1] = f"Datei in Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
 
     if os.path.exists(error_path):
         for f in listdir(error_path):
@@ -241,14 +272,97 @@ setTimeout(function() {{
 
 
 async def download_editor(file_name, user_id):
-    prepare_download(file_name, user_id)
-    final_file_name = join(ROOT, "data", "out", user_id, file_name + ".htmlfinal")
-    ui.download(src=final_file_name, filename=f"{os.path.splitext(file_name)[0]}.html")
+    """Enhanced download function with better error handling and debugging."""
+    try:
+        # Prepare the final HTML file
+        prepare_download(file_name, user_id)
+        final_file_name = join(ROOT, "data", "out", user_id, file_name + ".htmlfinal")
+        
+        # Verify the file exists and has content
+        if not os.path.exists(final_file_name):
+            ui.notify(f"Error: File not found for download: {final_file_name}", color="negative")
+            return
+            
+        file_size = os.path.getsize(final_file_name)
+        if file_size == 0:
+            ui.notify("Error: Generated file is empty", color="negative")
+            return
+            
+        # Use a stream-based approach for more reliable downloads
+        with open(final_file_name, 'rb') as f:
+            content = f.read()
+            
+        download_filename = f"{os.path.splitext(file_name)[0]}.html"
+        ui.download(content=content, filename=download_filename, mime="text/html")
+        
+        # Success notification
+        ui.notify(f"Download started: {download_filename}", color="positive")
+    except Exception as e:
+        # Handle any unexpected errors
+        ui.notify(f"Download error: {str(e)}", color="negative")
 
 
 async def download_srt(file_name, user_id):
-    srt_file = join(ROOT, "data", "out", user_id, file_name + ".srt")
-    ui.download(src=srt_file, filename=f"{os.path.splitext(file_name)[0]}.srt")
+    """Enhanced download function for SRT files with better error handling."""
+    try:
+        srt_file = join(ROOT, "data", "out", user_id, file_name + ".srt")
+        
+        # Verify the file exists
+        if not os.path.exists(srt_file):
+            ui.notify(f"Error: SRT file not found: {file_name}.srt", color="negative")
+            return
+            
+        file_size = os.path.getsize(srt_file)
+        if file_size == 0:
+            ui.notify("Error: SRT file is empty", color="negative")
+            return
+            
+        # Use a stream-based approach for more reliable downloads
+        with open(srt_file, 'rb') as f:
+            content = f.read()
+            
+        download_filename = f"{os.path.splitext(file_name)[0]}.srt"
+        ui.download(content=content, filename=download_filename, mime="text/srt")
+        
+        # Success notification
+        ui.notify(f"Download started: {download_filename}", color="positive")
+    except Exception as e:
+        # Handle any unexpected errors
+        ui.notify(f"Download error: {str(e)}", color="negative")
+
+
+# Secure file serving endpoint - NEW
+@ui.page("/secure-media/{requested_user_id}/{filename}")
+async def serve_secure_media(requested_user_id: str, filename: str):
+    """Serve media files securely after verifying user permissions."""
+    # Get current user's ID from their session
+    current_user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
+    
+    # Security check: only allow users to access their own files
+    if current_user_id != requested_user_id:
+        return "Access denied: You can only access your own files", 403
+        
+    # If verified, serve the file
+    file_path = join(ROOT, "data", "out", requested_user_id, filename)
+    if not isfile(file_path):
+        return f"File not found: {filename}", 404
+    
+    # Properly stream media content instead of triggering a download
+    # This allows the video player to play the content directly
+    with open(file_path, "rb") as f:
+        content = f.read()
+    
+    # Determine content type based on file extension
+    content_type = "video/mp4"  # Default for most of our files
+    if filename.lower().endswith((".mp3", ".wav")):
+        content_type = "audio/mpeg" if filename.lower().endswith(".mp3") else "audio/wav"
+    
+    # Return with proper streaming headers
+    return content, 200, {
+        "Content-Type": content_type,
+        "Accept-Ranges": "bytes",  # Important for streaming
+        "Content-Disposition": f"inline; filename={filename}"  # Ensures browser displays rather than downloads
+    }
 
 
 async def open_editor(file_name, user_id):
@@ -257,7 +371,8 @@ async def open_editor(file_name, user_id):
     with open(full_file_name, "r", encoding="utf-8") as f:
         content = f.read()
 
-    video_path = f"/data/{user_id}/{file_name}.mp4"
+    # Use secure endpoint instead of direct file path
+    video_path = f"/secure-media/{user_id}/{file_name}.mp4"
     content = content.replace(
         '<video id="player" width="100%" style="max-height: 320px" src="" type="video/MP4" controls="controls" position="sticky"></video>',
         f'<video id="player" width="100%" style="max-height: 320px" src="{video_path}" type="video/MP4" controls="controls" position="sticky"></video>',
@@ -273,14 +388,52 @@ async def open_editor(file_name, user_id):
 
 
 async def download_all(user_id):
-    zip_file_path = join(ROOT, "data", "out", user_id, "transcribed_files.zip")
-    with zipfile.ZipFile(zip_file_path, "w", allowZip64=True) as myzip:
-        for file_status in user_storage[user_id]["file_list"]:
-            if file_status[2] == 100.0:
-                prepare_download(file_status[0], user_id)
-                final_html = join(ROOT, "data", "out", user_id, file_status[0] + ".htmlfinal")
-                myzip.write(final_html, arcname=file_status[0] + ".html")
-    ui.download(zip_file_path)
+    """Enhanced download function for downloading all transcribed files as a zip."""
+    try:
+        zip_file_path = join(ROOT, "data", "out", user_id, "transcribed_files.zip")
+        
+        # Create a new zip file
+        with zipfile.ZipFile(zip_file_path, "w", allowZip64=True) as myzip:
+            count = 0
+            for file_status in user_storage[user_id]["file_list"]:
+                if file_status[2] == 100.0:
+                    # Prepare each file
+                    prepare_download(file_status[0], user_id)
+                    final_html = join(ROOT, "data", "out", user_id, file_status[0] + ".htmlfinal")
+                    
+                    # Verify the file exists before adding it
+                    if os.path.exists(final_html):
+                        myzip.write(final_html, arcname=file_status[0] + ".html")
+                        count += 1
+                    else:
+                        ui.notify(f"Warning: Could not find {file_status[0]}.htmlfinal", color="warning")
+        
+        # Check if we actually added any files
+        if count == 0:
+            ui.notify("No files were added to the zip archive", color="warning")
+            if os.path.exists(zip_file_path):
+                os.remove(zip_file_path)
+            return
+            
+        # Check if the zip file was created correctly
+        if not os.path.exists(zip_file_path) or os.path.getsize(zip_file_path) == 0:
+            ui.notify("Error creating zip file", color="negative")
+            return
+            
+        # Use the content-based approach for more reliable downloads
+        with open(zip_file_path, 'rb') as f:
+            content = f.read()
+            
+        # Download the zip with the proper content type
+        ui.download(content=content, filename="transcribed_files.zip", mime="application/zip")
+        ui.notify(f"Download started: transcribed_files.zip with {count} files", color="positive")
+        
+        # Clean up the temp file
+        if os.path.exists(zip_file_path):
+            os.remove(zip_file_path)
+            
+    except Exception as e:
+        ui.notify(f"Download error: {str(e)}", color="negative")
 
 
 def delete_file(file_name, user_id, refresh_file_view):
@@ -331,6 +484,12 @@ def listen(user_id, refresh_file_view):
                         estimated_time_left,
                         os.path.getmtime(in_file),
                     ]
+                    
+                    # Persist the updates to the file_list
+                    for i, file_status in enumerate(user_storage[user_id]["file_list"]):
+                        if file_status[0] == file_name:
+                            user_storage[user_id]["file_list"][i] = user_storage[user_id]["updates"]
+                            break
                 else:
                     os.remove(join(worker_user_dir, f))
                 refresh_file_view(
@@ -387,10 +546,10 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
 
         ui.notify("Änderungen gespeichert.")
 
+    # Get current user ID from browser storage
     user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
 
-    out_user_dir = join(ROOT, "data", "out", user_id)
-    app.add_media_files(f"/data/{user_id}", out_user_dir)
+    # We don't use app.add_media_files anymore - instead we use the secure endpoint
     user_data = user_storage.get(user_id, {})
     full_file_name = user_data.get("full_file_name")
 

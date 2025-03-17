@@ -55,7 +55,8 @@ def video(file_name, encode_base64):
     if encode_base64:
         content += f'\t\t\t<div style="padding: 0">\n\t\t\t\t<video id="player" width="100%" style="max-height: 250px" src="" type="video/MP4" controls="controls" position="sticky"></video>\n'
     else:
-        content += f'\t\t\t<div>\n\t\t\t\t<video id="player" width="100%" src="{file_name}" type="video/MP4" controls="controls" position="sticky"></video>\n'
+        # Note: The src will be properly replaced with the secure endpoint in main.py's open_editor function
+        content += f'\t\t\t<div>\n\t\t\t\t<video id="player" width="100%" src="" type="video/MP4" controls="controls" position="sticky"></video>\n'
     return content
 
 
