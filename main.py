@@ -804,6 +804,10 @@ async def main_page():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
+    # Create all required directories at startup
+    for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
+        os.makedirs(join(ROOT, directory), exist_ok=True)
+    
     # Configure static file serving for media files
     # This makes all files in the 'data/out' directory accessible via /media URL
     app.add_static_files('/media', join(ROOT, 'data', 'out'))
