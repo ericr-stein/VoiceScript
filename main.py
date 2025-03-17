@@ -304,9 +304,15 @@ def listen(user_id, refresh_file_view):
 
                 in_file = join(ROOT, "data", "in", user_id, file_name)
                 if os.path.exists(in_file):
+                    # Show different message for post-processing phase vs normal transcription
+                    if progress > 0.95:
+                        status_message = "Datei wird nachbearbeitet... (SRT-Datei wird erzeugt, Editor wird erstellt)"
+                    else:
+                        status_message = f"Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}"
+                    
                     user_storage[user_id]["updates"] = [
                         file_name,
-                        f"Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}",
+                        status_message,
                         progress * 100,
                         estimated_time_left,
                         os.path.getmtime(in_file),

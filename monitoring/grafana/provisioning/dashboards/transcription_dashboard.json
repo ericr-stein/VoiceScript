@@ -77,7 +77,7 @@
           "exemplar": true,
           "expr": "audio_files_total",
           "interval": "",
-          "legendFormat": "Audio Files",
+          "legendFormat": "Untranscribed Files",
           "refId": "B"
         }
       ],
