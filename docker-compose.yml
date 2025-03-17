@@ -28,7 +28,7 @@ services:
       - "traefik.http.routers.audiotranscription.priority=1"
       
       # Basic Auth middleware - username/password (default: admin/password)
-      - "traefik.http.middlewares.audiotranscription-auth.basicauth.users=admin:$$2y$$05$$l6arJ1nJb13q63YGaM.uCOjxE3QYbpXjQTelU1vkJdLz4vLIriTyq"
+      - "traefik.http.middlewares.audiotranscription-auth.basicauth.users=Transkription:$$2a$$12$$BM51tWbRy.6cS7GXLUyWZ.iC1kuD5Xr39EG823KwStaXUsHNOsY9O"
     networks:
       - traefik_network
     deploy:

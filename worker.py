@@ -96,6 +96,7 @@ def transcribe_file(file_name, multi_mode=False, multi_mode_track=None, audio_fi
     try:
         time.sleep(2)
         estimated_time, run_time = time_estimate(file_name, ONLINE)
+        logger.info(f"DEBUG: Estimated transcription time: {estimated_time} seconds for file {file_name}")
         if run_time == -1:
             report_error(file_name, file_name_error, user_id, "Datei konnte nicht gelesen werden")
             return data, estimated_time, progress_file_name
@@ -107,10 +108,12 @@ def transcribe_file(file_name, multi_mode=False, multi_mode_track=None, audio_fi
     if not multi_mode:
         worker_user_dir = join(ROOT, "data", "worker", user_id)
         os.makedirs(worker_user_dir, exist_ok=True)
+        logger.info(f"DEBUG: Worker user directory created: {worker_user_dir}")
         progress_file_name = join(worker_user_dir, f"{estimated_time}_{int(time.time())}_{file}")
         try:
             with open(progress_file_name, "w") as f:
                 f.write("")
+            logger.info(f"DEBUG: Successfully created progress file: {progress_file_name}")
         except OSError as e:
             logger.error(f"Could not create progress file: {progress_file_name}. Error: {e}")
 
