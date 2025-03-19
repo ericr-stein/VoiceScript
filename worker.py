@@ -46,14 +46,100 @@ if WINDOWS:
     os.environ["HF_HOME"] = join(ROOT, "models")
 
 
+def mark_file_as_processing(file_path):
+    """Create a simple state file to indicate a file is being processed."""
+    state_file = file_path + ".processing"
+    try:
+        with open(state_file, "w") as f:
+            f.write(str(int(time.time())))
+        logger.info(f"Marked file as processing: {file_path}")
+        return state_file
+    except Exception as e:
+        logger.error(f"Failed to mark file as processing: {file_path}, error: {str(e)}")
+        return None
+
+def should_process_file(file_path):
+    """Check if a file should be processed based on state files."""
+    # Get file info
+    file = basename(file_path)
+    user_id = normpath(dirname(file_path)).split(os.sep)[-1]
+    
+    # Skip if already successfully processed
+    file_name_viewer = join(ROOT, "data", "out", user_id, file + ".html")
+    if isfile(file_name_viewer):
+        logger.debug(f"Skipping already processed file: {file_path}")
+        return False
+        
+    # Skip if currently processing or previously failed
+    processing_marker = file_path + ".processing"
+    if os.path.exists(processing_marker):
+        # Check if processing for too long (stuck)
+        try:
+            with open(processing_marker, "r") as f:
+                start_time = int(f.read().strip())
+                # If processing for more than 30 minutes, consider it failed
+                if time.time() - start_time > 1800:
+                    logger.warning(f"File processing stuck for >30 min, marking as failed: {file_path}")
+                    # Move to error state
+                    report_error(
+                        file_path,
+                        join(ROOT, "data", "error", user_id, file),
+                        user_id,
+                        "Verarbeitung fehlgeschlagen oder steckengeblieben"
+                    )
+                else:
+                    logger.debug(f"File currently being processed, skipping: {file_path}")
+            return False
+        except Exception as e:
+            logger.error(f"Invalid processing state file for {file_path}, error: {str(e)}")
+            try:
+                # Clean up bad marker file
+                os.remove(processing_marker)
+                logger.info(f"Removed invalid processing marker for: {file_path}")
+            except Exception as clean_e:
+                logger.error(f"Failed to clean up invalid marker: {str(clean_e)}")
+            # We'll let it be processed again
+            
+    return True
+
 def report_error(file_name, file_name_error, user_id, text=""):
-    logger.error(text)
+    """Report an error and move file to error directory with improved reliability."""
+    logger.error(f"Error processing file {file_name}: {text}")
     error_dir = join(ROOT, "data", "error", user_id)
     os.makedirs(error_dir, exist_ok=True)
+    
+    # First ensure we can create the error text file
     error_file = file_name_error + ".txt"
-    with open(error_file, "w") as f:
-        f.write(text)
-    shutil.move(file_name, file_name_error)
+    try:
+        with open(error_file, "w") as f:
+            f.write(text)
+        logger.info(f"Created error file: {error_file}")
+    except Exception as e:
+        logger.error(f"Failed to create error file {error_file}: {str(e)}")
+        
+    # Then try to move the file, using copy+delete if move fails
+    try:
+        shutil.move(file_name, file_name_error)
+        logger.info(f"Moved file to error directory: {file_name} -> {file_name_error}")
+    except Exception as e:
+        logger.error(f"Could not move file to error directory: {str(e)}")
+        try:
+            # Try copy+delete as fallback
+            shutil.copy2(file_name, file_name_error)
+            logger.info(f"Copied file to error directory: {file_name} -> {file_name_error}")
+            os.remove(file_name)
+            logger.info(f"Removed original file after copy: {file_name}")
+        except Exception as e2:
+            logger.error(f"Failed fallback file handling: {str(e2)}")
+            
+    # Always clean up the processing marker
+    try:
+        processing_marker = file_name + ".processing"
+        if os.path.exists(processing_marker):
+            os.remove(processing_marker)
+            logger.info(f"Removed processing marker: {processing_marker}")
+    except Exception as e:
+        logger.error(f"Could not remove processing marker: {str(e)}")
 
 
 def oldest_files(folder):
@@ -307,14 +393,14 @@ if __name__ == "__main__":
                 if file == "hotwords.txt" or file == "language.txt":
                     continue
                     
-                file_name_viewer = join(ROOT, "data", "out", user_id, file + ".html")
-                
-                # Skip files that have already been processed or don't exist
-                if not isfile(file_path) or isfile(file_name_viewer):
+                # Skip files that should not be processed (already processed, currently processing, etc.)
+                if not isfile(file_path) or not should_process_file(file_path):
                     continue
                     
                 # This file is in the queue
                 actual_queue.append(file_path)
+            
+            logger.info(f"Found {len(actual_queue)} files in queue")
             
             # Track correct queue size for monitoring
             track_queue_size(len(actual_queue))
@@ -328,6 +414,10 @@ if __name__ == "__main__":
             file_name = actual_queue[0]
             file = basename(file_name)
             user_id = normpath(dirname(file_name)).split(os.sep)[-1]
+            
+            # Mark file as processing to prevent reprocessing
+            logger.info(f"Starting to process file: {file_name}")
+            processing_marker = mark_file_as_processing(file_name)
             
             language_file = join(ROOT, "data", "in", user_id, "language.txt")
             if isfile(language_file):
@@ -458,6 +548,17 @@ if __name__ == "__main__":
 
             if progress_file_name and os.path.exists(progress_file_name):
                 os.remove(progress_file_name)
+                
+            # Clean up processing marker after successful completion
+            try:
+                if os.path.exists(file_name + ".processing"):
+                    os.remove(file_name + ".processing")
+                    logger.info(f"Removed processing marker after successful transcription: {file_name}")
+            except Exception as e:
+                logger.error(f"Could not remove processing marker: {str(e)}")
+                
+            logger.info(f"Successfully processed file: {file_name}")
+                
             if DEVICE == "mps":
                 print("Exiting worker to prevent memory leaks with MPS...")
                 exit(0)  # Due to memory leak problems, we restart the worker after each transcription

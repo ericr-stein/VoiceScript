@@ -579,57 +579,6 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
         ui.label("Session abgelaufen. Bitte öffne den Editor erneut.")
 
 
-def inspect_docker_container(user_id):
-    """Diagnostic function to check Docker container status related to progress updates."""
-    try:
-        result = ""
-        # Try to find information about running docker containers
-        print(f"DEBUG: Checking for docker containers that might handle transcription")
-        
-        # Check if user directories exist
-        worker_dir = join(ROOT, "data", "worker")
-        if not os.path.exists(worker_dir):
-            result += f"Worker directory {worker_dir} does not exist!\n"
-        else:
-            result += f"Worker directory {worker_dir} exists\n"
-            
-            # Check user subdirectory
-            user_worker_dir = join(worker_dir, user_id)
-            if not os.path.exists(user_worker_dir):
-                result += f"User worker directory {user_worker_dir} does not exist!\n"
-                os.makedirs(user_worker_dir, exist_ok=True)
-                result += f"Created user worker directory\n"
-            else:
-                result += f"User worker directory {user_worker_dir} exists\n"
-                
-                # Check for progress files
-                try:
-                    files = listdir(user_worker_dir)
-                    result += f"Found {len(files)} files in user worker directory\n"
-                    for f in files:
-                        result += f"  - {f}\n"
-                except Exception as e:
-                    result += f"Error listing files in worker directory: {str(e)}\n"
-        
-        # Check if input files exist
-        in_dir = join(ROOT, "data", "in", user_id)
-        if os.path.exists(in_dir):
-            try:
-                files = [f for f in listdir(in_dir) if isfile(join(in_dir, f)) 
-                         and f != "hotwords.txt" and f != "language.txt"]
-                result += f"Found {len(files)} input files:\n"
-                for f in files:
-                    result += f"  - {f}\n"
-            except Exception as e:
-                result += f"Error listing input files: {str(e)}\n"
-        else:
-            result += f"Input directory {in_dir} does not exist!\n"
-            
-        return result
-    except Exception as e:
-        return f"Error in diagnostic function: {str(e)}"
-
-
 @ui.page("/")
 async def main_page():
     """Main page of the application."""
