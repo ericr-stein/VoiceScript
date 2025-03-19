@@ -77,9 +77,9 @@ def should_process_file(file_path):
         try:
             with open(processing_marker, "r") as f:
                 start_time = int(f.read().strip())
-                # If processing for more than 30 minutes, consider it failed
-                if time.time() - start_time > 1800:
-                    logger.warning(f"File processing stuck for >30 min, marking as failed: {file_path}")
+                # If processing for more than 10 minutes, consider it failed
+                if time.time() - start_time > 600:
+                    logger.warning(f"File processing stuck for >10 min, marking as failed: {file_path}")
                     # Move to error state
                     report_error(
                         file_path,
