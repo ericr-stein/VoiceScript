@@ -159,6 +159,11 @@ def transcribe_file(file_name, multi_mode=False, multi_mode_track=None, audio_fi
     estimated_time = 0
     progress_file_name = ""
 
+    # First check if the file still exists - return early if not
+    if not os.path.exists(file_name):
+        logger.info(f"File no longer exists, cancelling processing: {file_name}")
+        return None, estimated_time, progress_file_name
+
     file = basename(file_name)
     user_id = normpath(dirname(file_name)).split(os.sep)[-1]
     file_name_error = join(ROOT, "data", "error", user_id, file)
@@ -518,6 +523,13 @@ if __name__ == "__main__":
             if data is None:
                 continue
 
+            # Check if the file still exists before generating outputs
+            if not os.path.exists(file_name):
+                logger.info(f"File was deleted during processing, cancelling output generation: {file_name}")
+                if progress_file_name and os.path.exists(progress_file_name):
+                    os.remove(progress_file_name)
+                continue
+
             # Generate outputs
             try:
                 file_name_out = join(ROOT, "data", "out", user_id, file + ".mp4")
@@ -531,6 +543,7 @@ if __name__ == "__main__":
                 viewer = create_viewer(data, file_name_out, True, False, ROOT, language)
 
                 file_name_srt = join(ROOT, "data", "out", user_id, file + ".srt")
+                file_name_viewer = join(ROOT, "data", "out", user_id, file + ".html")
                 with open(file_name_viewer, "w", encoding="utf-8") as f:
                     f.write(viewer)
                 with open(file_name_srt, "w", encoding="utf-8") as f:

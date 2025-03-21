@@ -4,6 +4,7 @@ import shutil
 import zipfile
 import datetime
 import base64
+import logging
 from os import listdir
 from os.path import isfile, join, normpath, basename, dirname
 from functools import partial
@@ -427,11 +428,32 @@ def delete_file(file_name, user_id, refresh_file_view):
     for suffix in suffixes:
         paths_to_delete.append(join(ROOT, "data", "out", user_id, file_name + suffix))
 
+    # Also delete any processing marker files
+    processing_marker = join(ROOT, "data", "in", user_id, file_name + ".processing")
+    paths_to_delete.append(processing_marker)
+    
+    # Try to delete all the paths
     for path in paths_to_delete:
         if os.path.exists(path):
-            os.remove(path)
+            try:
+                os.remove(path)
+                logging.info(f"Deleted file: {path}")
+            except Exception as e:
+                logging.error(f"Failed to delete {path}: {str(e)}")
+
+    # Delete worker progress files that might be related to this file
+    worker_user_dir = join(ROOT, "data", "worker", user_id)
+    if os.path.exists(worker_user_dir):
+        for f in os.listdir(worker_user_dir):
+            if f.endswith(f"_{file_name}"):
+                try:
+                    os.remove(join(worker_user_dir, f))
+                    logging.info(f"Deleted worker file: {join(worker_user_dir, f)}")
+                except Exception as e:
+                    logging.error(f"Failed to delete worker file {join(worker_user_dir, f)}: {str(e)}")
 
     refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
+    ui.notify(f"Datei '{file_name}' wurde entfernt")
 
 
 def listen(user_id, refresh_file_view):
@@ -565,6 +587,7 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
         )
         ui.add_body_html(content)
 
+        # Add download function script
         ui.add_body_html(
             """
 <script language="javascript">
@@ -574,6 +597,11 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
     }
 </script>
 """
+        )
+        
+        # Add video sync fix script as a separate tag
+        ui.add_body_html(
+            f'<script src="/media/video-sync-fix.js?v={int(time.time())}"></script>'
         )
     else:
         ui.label("Session abgelaufen. Bitte öffne den Editor erneut.")
@@ -591,15 +619,28 @@ async def main_page():
         if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
             display_results.refresh(user_id=user_id)
 
-    @ui.refreshable
-    def display_queue(user_id):
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
-            if 0 <= file_status[2] < 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
-                ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
-                ui.separator()
+@ui.refreshable
+def display_queue(user_id):
+    for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+        if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+            file_status = user_storage[user_id]["updates"]
+        if 0 <= file_status[2] < 100.0:
+            ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+            ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
+            
+            # Add delete button for queue entries
+            ui.button(
+                "Abbrechen",
+                on_click=partial(
+                    delete_file,
+                    file_name=file_status[0],
+                    user_id=user_id,
+                    refresh_file_view=refresh_file_view,
+                ),
+                color="red-5",
+            ).props("no-caps")
+            
+            ui.separator()
 
     @ui.refreshable
     def display_results(user_id):
