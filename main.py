@@ -675,5 +675,294 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
             '<a href ="#" id="viewer-link" onClick="viewerClick()" class="btn btn-primary">Viewer erstellen</a>',
             "<div>Bitte den Editor herunterladen, um den Viewer zu erstellen.</div>",
         )
-        
+        content = content.replace(
+            '<a href="#" id="viewer-link" onclick="viewerClick()" class="btn btn-primary">Viewer erstellen</a>',
+            "<div>Bitte den Editor herunterladen, um den Viewer zu erstellen.</div>",
+        )
         ui.add_body_html(content)
+
+        ui.add_body_html(
+            """
+<script language="javascript">
+    var origFunction = downloadClick;
+    downloadClick = function downloadClick() {
+        emitEvent('editor_save');
+    }
+</script>
+"""
+        )
+    else:
+        ui.label("Session abgelaufen. Bitte öffne den Editor erneut.")
+
+
+def inspect_docker_container(user_id):
+    """Diagnostic function to check Docker container status related to progress updates."""
+    try:
+        result = ""
+        # Try to find information about running docker containers
+        print(f"DEBUG: Checking for docker containers that might handle transcription")
+        
+        # Check if user directories exist
+        worker_dir = join(ROOT, "data", "worker")
+        if not os.path.exists(worker_dir):
+            result += f"Worker directory {worker_dir} does not exist!\n"
+        else:
+            result += f"Worker directory {worker_dir} exists\n"
+            
+            # Check user subdirectory
+            user_worker_dir = join(worker_dir, user_id)
+            if not os.path.exists(user_worker_dir):
+                result += f"User worker directory {user_worker_dir} does not exist!\n"
+                os.makedirs(user_worker_dir, exist_ok=True)
+                result += f"Created user worker directory\n"
+            else:
+                result += f"User worker directory {user_worker_dir} exists\n"
+                
+                # Check for progress files
+                try:
+                    files = listdir(user_worker_dir)
+                    result += f"Found {len(files)} files in user worker directory\n"
+                    for f in files:
+                        result += f"  - {f}\n"
+                except Exception as e:
+                    result += f"Error listing files in worker directory: {str(e)}\n"
+        
+        # Check if input files exist
+        in_dir = join(ROOT, "data", "in", user_id)
+        if os.path.exists(in_dir):
+            try:
+                files = [f for f in listdir(in_dir) if isfile(join(in_dir, f)) 
+                         and f != "hotwords.txt" and f != "language.txt"]
+                result += f"Found {len(files)} input files:\n"
+                for f in files:
+                    result += f"  - {f}\n"
+            except Exception as e:
+                result += f"Error listing input files: {str(e)}\n"
+        else:
+            result += f"Input directory {in_dir} does not exist!\n"
+            
+        return result
+    except Exception as e:
+        return f"Error in diagnostic function: {str(e)}"
+
+
+@ui.page("/")
+async def main_page():
+    """Main page of the application."""
+
+    def refresh_file_view(user_id, refresh_queue, refresh_results):
+        num_errors = len(user_storage[user_id]["known_errors"])
+        read_files(user_id)
+        if refresh_queue:
+            display_queue.refresh(user_id=user_id)
+        if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
+            display_results.refresh(user_id=user_id)
+
+    @ui.refreshable
+    def display_queue(user_id):
+        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+                file_status = user_storage[user_id]["updates"]
+            if 0 <= file_status[2] < 100.0:
+                # Create a container for each queue item
+                with ui.element("div").style("margin-bottom: 8px; width: 100%;"):
+                    # Use row for the filename/status and delete button
+                    with ui.row().classes("items-center w-full no-wrap"):
+                        # Text on left, growing to fill space
+                        ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}").classes("flex-grow")
+                        
+                        # Cancel button on right with explicit visibility and styling
+                        ui.button(
+                            icon="close", 
+                            color="red-5", 
+                            size="sm",
+                            on_click=partial(
+                                delete_file,
+                                file_name=file_status[0],
+                                user_id=user_id,
+                                refresh_file_view=refresh_file_view,
+                            )
+                        ).props("round flat").style("display: flex; visibility: visible; min-width: 36px; min-height: 36px;")
+                    
+                    # Progress bar below the row
+                    ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
+                    ui.separator()
+
+    @ui.refreshable
+    def display_results(user_id):
+        any_file_ready = False
+        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+                file_status = user_storage[user_id]["updates"]
+            if file_status[2] >= 100.0:
+                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
+                with ui.row():
+                    ui.button(
+                        "Editor herunterladen (Lokal)",
+                        on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "Editor öffnen (Server)",
+                        on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "SRT-Datei",
+                        on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "Datei entfernen",
+                        on_click=partial(
+                            delete_file,
+                            file_name=file_status[0],
+                            user_id=user_id,
+                            refresh_file_view=refresh_file_view,
+                        ),
+                        color="red-5",
+                    ).props("no-caps")
+                    any_file_ready = True
+                ui.separator()
+            elif file_status[2] == -1:
+                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+                ui.button(
+                    "Datei entfernen",
+                    on_click=partial(
+                        delete_file,
+                        file_name=file_status[0],
+                        user_id=user_id,
+                        refresh_file_view=refresh_file_view,
+                    ),
+                    color="red-5",
+                ).props("no-caps")
+                ui.separator()
+        if any_file_ready:
+            ui.button(
+                "Alle Dateien herunterladen",
+                on_click=partial(download_all, user_id=user_id),
+            ).props("no-caps")
+
+    def display_files(user_id):
+        read_files(user_id)
+        with ui.card().classes("border p-4").style("width: min(60vw, 700px);"):
+            display_queue(user_id=user_id)
+            display_results(user_id=user_id)
+
+    if ONLINE:
+        user_id = str(app.storage.browser.get("id", ""))
+    else:
+        user_id = "local"
+
+    user_storage[user_id] = {
+        "uploaded_files": set(),
+        "file_list": [],
+        "content": "",
+        "content_filename": "",
+        "file_in_progress": None,
+        "known_errors": set(),
+    }
+
+    in_user_tmp_dir = join(ROOT, "data", "in", user_id, "tmp")
+    if os.path.exists(in_user_tmp_dir):
+        shutil.rmtree(in_user_tmp_dir)
+
+    read_files(user_id)
+
+    with ui.column():
+        with ui.header(elevated=True).style("background-color: #0070b4;").props("fit=scale-down").classes("q-pa-xs-xs"):
+            ui.image(join(ROOT, "data", "banner.png")).style("height: 90px; width: 443px;")
+        with ui.row():
+            with ui.column():
+                with ui.card().classes("border p-4"):
+                    with ui.card().style("width: min(40vw, 400px)"):
+                        upload_element = (
+                            ui.upload(
+                                multiple=True,
+                                on_upload=partial(handle_upload, user_id=user_id),
+                                on_rejected=handle_reject,
+                                label="Dateien auswählen",
+                                auto_upload=True,
+                                max_file_size=12_000_000_000,
+                                max_files=100,
+                            )
+                            .props('accept="video/*, audio/*, .zip"')
+                            .tooltip("Dateien auswählen")
+                            .classes("w-full")
+                            .style("width: 100%;")
+                        )
+                        upload_element.on(
+                            "uploaded",
+                            partial(
+                                handle_added,
+                                user_id=user_id,
+                                upload_element=upload_element,
+                                refresh_file_view=refresh_file_view,
+                            ),
+                        )
+
+                ui.label("")
+                
+                # Quick timer for checking file progress
+                ui.timer(
+                    1,  # Check frequently for better responsiveness
+                    partial(listen, user_id=user_id, refresh_file_view=refresh_file_view),
+                )
+                user_storage[user_id]["language"] = ui.select(
+                    [LANGUAGES[key] for key in LANGUAGES],
+                    value="deutsch",
+                    on_change=partial(update_language, user_id),
+                    label="Gesprochene Sprache",
+                ).style("width: min(40vw, 400px)")
+                with (
+                    ui.expansion("Vokabular", icon="menu_book")
+                    .classes("w-full no-wrap")
+                    .style("width: min(40vw, 400px)") as expansion
+                ):
+                    user_storage[user_id]["textarea"] = ui.textarea(
+                        label="Vokabular",
+                        placeholder="Zürich\nUster\nUitikon",
+                        on_change=partial(update_hotwords, user_id),
+                    ).classes("w-full h-full")
+                    hotwords = app.storage.user.get(f"{user_id}_vocab", "").strip()
+                    if hotwords:
+                        user_storage[user_id]["textarea"].value = hotwords
+                        expansion.open()
+                with (
+                    ui.expansion("Informationen", icon="help_outline")
+                    .classes("w-full no-wrap")
+                    .style("width: min(40vw, 400px)")
+                ):
+                    ui.label("Diese Prototyp-Applikation wurde vom Statistischen Amt & Amt für Informatik Kanton Zürich entwickelt.")
+                ui.button(
+                    "Anleitung öffnen",
+                    on_click=lambda: ui.open(help_page, new_tab=True),
+                ).props("no-caps")
+
+            display_files(user_id=user_id)
+
+
+if __name__ in {"__main__", "__mp_main__"}:
+    # Create all required directories at startup
+    for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
+        os.makedirs(join(ROOT, directory), exist_ok=True)
+    
+    # Configure static file serving for media files
+    # This makes all files in the 'data/out' directory accessible via /media URL
+    app.add_static_files('/media', join(ROOT, 'data', 'out'))
+    
+    if ONLINE:
+        ui.run(
+            port=8080,
+            title="TranscriboZH",
+            storage_secret=STORAGE_SECRET,
+            favicon=join(ROOT, "data", "logo.png"),
+        )
+
+        # run command with ssl certificate
+        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png")
+    else:
+        ui.run(
+            title="Transcribo",
+            host="127.0.0.1",
+            port=8080,
+            storage_secret=STORAGE_SECRET,
+            favicon=join(ROOT, "data", "logo.png"),
+        )
