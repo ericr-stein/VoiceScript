@@ -599,10 +599,7 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
 """
         )
         
-        # Add video sync fix script as a separate tag
-        ui.add_body_html(
-            f'<script src="/media/video-sync-fix.js?v={int(time.time())}"></script>'
-        )
+        # Video sync is now directly integrated in viewer.py
     else:
         ui.label("Session abgelaufen. Bitte öffne den Editor erneut.")
 

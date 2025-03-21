@@ -266,22 +266,40 @@ function handleBeforeInput(e) {
 document.getElementsByClassName("wrapper")[0].addEventListener('beforeinput', handleBeforeInput);
 
 var vid = document.getElementsByTagName("video")[0];
-vid.ontimeupdate = function() {highlightFunction()};"""
-    content += "\n"
+vid.ontimeupdate = function() {highlightFunction()};
 
-    content += "var timestamps = "
-    timestamps = "Array("
-    for segment in data:
-        timestamps += f"Array({segment['start']}, {segment['end']}), "
-    if len(data) > 0:
-        timestamps = timestamps[:-2] + ");"
-    else:
-        timestamps += ");"
-    content += timestamps
-    content += "\n"
+var timestamps = Array(...); // Keep your existing timestamps definition
 
-    content += """vid.currentTime = 0.0;
-highlightFunction();
+// Create a robust initialization function for video sync
+function initializeVideoSync() {
+    if (vid.readyState >= 2) {  // HAVE_CURRENT_DATA or better
+        // Initialize timestamp synchronization
+        vid.currentTime = 0.0;
+        highlightFunction();
+        
+        // Ensure ontimeupdate handler is properly bound
+        if (!vid._highlightBound) {
+            vid._highlightBound = true;
+            vid.ontimeupdate = function() { highlightFunction(); };
+        }
+        console.log("Video sync initialized successfully");
+    } else {
+        // Try again in a short while if video not ready
+        setTimeout(initializeVideoSync, 100);
+    }
+}
+
+// Multiple event listeners for cross-browser compatibility
+vid.addEventListener('loadeddata', initializeVideoSync);
+vid.addEventListener('loadedmetadata', initializeVideoSync);
+
+// Also try initial sync
+if (vid.readyState >= 2) {
+    initializeVideoSync();
+} else {
+    // Fallback timeout-based initialization
+    setTimeout(initializeVideoSync, 500);
+}
 
 function pad(num, size) {
     num = num.toString();
