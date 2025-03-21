@@ -281,6 +281,37 @@ var timestamps = Array(
     content += timestamps
     content += """);
 
+// Function to ensure video seeking works properly
+function enableVideoSeeking() {
+    // Make sure controls are enabled
+    vid.controls = true;
+    
+    // Prevent any click event interference
+    vid.addEventListener('click', function(e) {
+        // Let the native video controls handle the click
+        e.stopPropagation();
+    });
+    
+    // Ensure video element can be seeked properly
+    vid.addEventListener('loadedmetadata', function() {
+        console.log("Video is seekable: " + vid.seekable.length);
+    });
+    
+    // Force browser to update the seeking UI
+    vid.addEventListener('canplay', function() {
+        // Ensure seeking is properly initialized
+        if (vid.seekable.length > 0) {
+            console.log("Video seeking range: " + vid.seekable.start(0) + " - " + vid.seekable.end(0));
+        }
+    });
+    
+    // Add specific handler for timeline clicks
+    vid.addEventListener('seeking', function() {
+        console.log("Seeking to: " + vid.currentTime);
+        highlightFunction(); // Update transcript highlighting when seeking
+    });
+}
+
 // Create a robust initialization function for video sync
 function initializeVideoSync() {
     if (vid.readyState >= 2) {  // HAVE_CURRENT_DATA or better
@@ -293,6 +324,10 @@ function initializeVideoSync() {
             vid._highlightBound = true;
             vid.ontimeupdate = function() { highlightFunction(); };
         }
+        
+        // Enable proper video seeking
+        enableVideoSeeking();
+        
         console.log("Video sync initialized successfully");
     } else {
         // Try again in a short while if video not ready

@@ -408,13 +408,19 @@ async def open_editor(file_name, user_id):
 
     # Use the static file serving path instead of secure endpoint
     video_path = f"/media/{user_id}/{file_name}.mp4"
+    
+    # Enhanced video element with better seeking support
+    enhanced_video_320 = f'<video id="player" width="100%" style="max-height: 320px" src="{video_path}" type="video/MP4" controls="controls" position="sticky" preload="auto" controlsList="nodownload"></video>'
+    enhanced_video_250 = f'<video id="player" width="100%" style="max-height: 250px" src="{video_path}" type="video/MP4" controls="controls" position="sticky" preload="auto" controlsList="nodownload"></video>'
+    
+    # Add preload="auto" to ensure media is fully loaded for seeking
     content = content.replace(
         '<video id="player" width="100%" style="max-height: 320px" src="" type="video/MP4" controls="controls" position="sticky"></video>',
-        f'<video id="player" width="100%" style="max-height: 320px" src="{video_path}" type="video/MP4" controls="controls" position="sticky"></video>',
+        enhanced_video_320,
     )
     content = content.replace(
         '<video id="player" width="100%" style="max-height: 250px" src="" type="video/MP4" controls="controls" position="sticky"></video>',
-        f'<video id="player" width="100%" style="max-height: 250px" src="{video_path}" type="video/MP4" controls="controls" position="sticky"></video>',
+        enhanced_video_250,
     )
 
     user_storage[user_id]["content"] = content
