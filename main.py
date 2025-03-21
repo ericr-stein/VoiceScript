@@ -53,17 +53,31 @@ def get_global_processing_queue():
     """Get all files currently in the processing queue across all users."""
     all_queued_files = []
     
+    # Track filenames already added to the queue to prevent duplicates
+    processed_files = set()
+    
     # Find all incomplete files across all users
     for u_id in user_storage:
         for file_status in user_storage[u_id].get("file_list", []):
-            if 0 <= file_status[2] < 100.0:  # Incomplete files
+            # Only add files that:
+            # 1. Are in progress (0-100% complete)
+            # 2. Haven't been added already (prevents duplicates from .processing markers)
+            # 3. Don't have .processing extension (these are just markers)
+            filename = file_status[0]
+            unique_key = f"{u_id}_{filename}"
+            
+            if (0 <= file_status[2] < 100.0 and  # Incomplete files
+                unique_key not in processed_files and
+                not filename.endswith(".processing")):
+                
                 all_queued_files.append({
                     "user_id": u_id,
-                    "filename": file_status[0],
+                    "filename": filename,
                     "estimated_time": file_status[3],
                     "upload_time": file_status[4],
                     "progress": file_status[2]
                 })
+                processed_files.add(unique_key)
     
     # Sort by upload time (oldest first) to match worker's processing order
     all_queued_files.sort(key=lambda x: x["upload_time"])
@@ -79,7 +93,11 @@ def read_files(user_id):
 
     if os.path.exists(in_path):
         for f in listdir(in_path):
-            if isfile(join(in_path, f)) and f != "hotwords.txt" and f != "language.txt":
+            # Skip configuration files and processing markers
+            if (isfile(join(in_path, f)) and 
+                f != "hotwords.txt" and 
+                f != "language.txt" and
+                not f.endswith(".processing")):
                 file_status = [
                     f,
                     "Datei in Warteschlange. Geschätzte Wartezeit: ",
@@ -740,7 +758,19 @@ async def main_page():
             if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
                 file_status = user_storage[user_id]["updates"]
             if 0 <= file_status[2] < 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+                with ui.row().classes("items-center w-full"):
+                    ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}").classes("flex-grow")
+                    ui.button(
+                        icon="close", 
+                        color="red-5", 
+                        size="sm",
+                        on_click=partial(
+                            delete_file,
+                            file_name=file_status[0],
+                            user_id=user_id,
+                            refresh_file_view=refresh_file_view,
+                        )
+                    ).props("round flat")
                 ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
                 ui.separator()
 

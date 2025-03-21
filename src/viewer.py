@@ -271,7 +271,15 @@ document.getElementsByClassName("wrapper")[0].addEventListener('beforeinput', ha
 var vid = document.getElementsByTagName("video")[0];
 vid.ontimeupdate = function() {highlightFunction()};
 
-var timestamps = Array(...); // Keep your existing timestamps definition
+var timestamps = Array(
+"""
+    timestamps = ""
+    for segment in data:
+        timestamps += f"Array({segment['start']}, {segment['end']}), "
+    if len(data) > 0:
+        timestamps = timestamps[:-2]
+    content += timestamps
+    content += """);
 
 // Create a robust initialization function for video sync
 function initializeVideoSync() {
