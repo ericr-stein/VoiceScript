@@ -758,12 +758,12 @@ async def main_page():
             if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
                 file_status = user_storage[user_id]["updates"]
             if 0 <= file_status[2] < 100.0:
-                # Create container with relative positioning for proper layout
-                with ui.element("div").style("position: relative; width: 100%;"):
-                    # Add the file name and status
-                    ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+                # Create a simple row for each item with text and cancel button
+                with ui.row().classes("items-center w-full"):
+                    # Text on left, growing to fill space
+                    ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}").classes("flex-grow")
                     
-                    # Add the cancel button positioned on the right
+                    # Cancel button on right
                     ui.button(
                         icon="close", 
                         color="red-5", 
@@ -774,11 +774,11 @@ async def main_page():
                             user_id=user_id,
                             refresh_file_view=refresh_file_view,
                         )
-                    ).props("round flat").style("position: absolute; right: 0; top: 0;")
-                    
-                    # Progress bar below text
-                    ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
-                    ui.separator()
+                    ).props("round flat")
+                
+                # Progress bar and separator outside the row
+                ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
+                ui.separator()
 
     @ui.refreshable
     def display_results(user_id):
