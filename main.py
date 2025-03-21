@@ -604,17 +604,14 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
         ui.label("Session abgelaufen. Bitte öffne den Editor erneut.")
 
 
-@ui.page("/")
-async def main_page():
-    """Main page of the application."""
+def refresh_file_view(user_id, refresh_queue, refresh_results):
+    num_errors = len(user_storage[user_id]["known_errors"])
+    read_files(user_id)
+    if refresh_queue:
+        display_queue.refresh(user_id=user_id)
+    if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
+        display_results.refresh(user_id=user_id)
 
-    def refresh_file_view(user_id, refresh_queue, refresh_results):
-        num_errors = len(user_storage[user_id]["known_errors"])
-        read_files(user_id)
-        if refresh_queue:
-            display_queue.refresh(user_id=user_id)
-        if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
-            display_results.refresh(user_id=user_id)
 
 @ui.refreshable
 def display_queue(user_id):
@@ -639,41 +636,28 @@ def display_queue(user_id):
             
             ui.separator()
 
-    @ui.refreshable
-    def display_results(user_id):
-        any_file_ready = False
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
-            if file_status[2] >= 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
-                with ui.row():
-                    ui.button(
-                        "Editor herunterladen (Lokal)",
-                        on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "Editor öffnen (Server)",
-                        on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "SRT-Datei",
-                        on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "Datei entfernen",
-                        on_click=partial(
-                            delete_file,
-                            file_name=file_status[0],
-                            user_id=user_id,
-                            refresh_file_view=refresh_file_view,
-                        ),
-                        color="red-5",
-                    ).props("no-caps")
-                    any_file_ready = True
-                ui.separator()
-            elif file_status[2] == -1:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+
+@ui.refreshable
+def display_results(user_id):
+    any_file_ready = False
+    for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+        if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+            file_status = user_storage[user_id]["updates"]
+        if file_status[2] >= 100.0:
+            ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
+            with ui.row():
+                ui.button(
+                    "Editor herunterladen (Lokal)",
+                    on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
+                ).props("no-caps")
+                ui.button(
+                    "Editor öffnen (Server)",
+                    on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
+                ).props("no-caps")
+                ui.button(
+                    "SRT-Datei",
+                    on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
+                ).props("no-caps")
                 ui.button(
                     "Datei entfernen",
                     on_click=partial(
@@ -684,136 +668,123 @@ def display_queue(user_id):
                     ),
                     color="red-5",
                 ).props("no-caps")
-                ui.separator()
-        if any_file_ready:
+                any_file_ready = True
+            ui.separator()
+        elif file_status[2] == -1:
+            # Error files
+            ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
+            ui.markdown(f"**Fehler**: {file_status[1]}")
             ui.button(
-                "Alle Dateien herunterladen",
-                on_click=partial(download_all, user_id=user_id),
+                "Datei entfernen",
+                on_click=partial(
+                    delete_file,
+                    file_name=file_status[0],
+                    user_id=user_id,
+                    refresh_file_view=refresh_file_view,
+                ),
+                color="red-5",
             ).props("no-caps")
+            ui.separator()
+            
+    # Add download all button if any files are ready
+    if any_file_ready:
+        ui.button(
+            "Alle Dateien herunterladen",
+            on_click=partial(download_all, user_id=user_id),
+        ).props("no-caps")
 
-    def display_files(user_id):
-        read_files(user_id)
-        with ui.card().classes("border p-4").style("width: min(60vw, 700px);"):
+
+@ui.page("/")
+def main_page():
+    """Main page for file upload and transcription."""
+    # Get current user ID from browser storage
+    user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
+    
+    # Initialize storage if needed
+    if user_id not in user_storage:
+        user_storage[user_id] = {"file_list": [], "known_errors": set()}
+    
+    # Add logo and header
+    with ui.row().classes("items-center"):
+        ui.image("data/logo.png").style("max-width: 200px")
+        ui.label("Audio Transkription").classes("text-h4 q-ml-md")
+    
+    ui.separator()
+    
+    # Create tabs for different sections
+    with ui.tabs().classes("w-full") as tabs:
+        ui.tab("upload", "Datei hochladen")
+        ui.tab("files", "Dateien")
+        ui.tab("settings", "Einstellungen")
+        ui.tab("help", "Hilfe")
+        
+    with ui.tab_panels(tabs, value="upload").classes("w-full"):
+        with ui.tab_panel("upload"):
+            ui.label("Bitte wählen Sie eine Audio- oder Videodatei zum Hochladen aus:")
+            upload = ui.upload(
+                label="Datei auswählen",
+                auto_upload=True,
+                max_files=1,
+                max_file_size=12*1024*1024*1024,  # 12GB max
+                on_upload=lambda e: handle_upload(e, user_id),
+                on_rejected=handle_reject,
+                on_added=lambda e: handle_added(e, user_id, upload, refresh_file_view)
+            ).props("accept=audio/*,video/*")
+            
+            ui.button(
+                "Ausgewählte Datei hochladen", 
+                on_click=lambda: upload.upload()
+            ).props("no-caps")
+            
+        with ui.tab_panel("files"):
+            ui.label("Dateien in Bearbeitung:")
             display_queue(user_id=user_id)
+            
+            ui.label("Fertige Dateien:")
             display_results(user_id=user_id)
-
-    if ONLINE:
-        user_id = str(app.storage.browser.get("id", ""))
-    else:
-        user_id = "local"
-
-    user_storage[user_id] = {
-        "uploaded_files": set(),
-        "file_list": [],
-        "content": "",
-        "content_filename": "",
-        "file_in_progress": None,
-        "known_errors": set(),
-    }
-
-    in_user_tmp_dir = join(ROOT, "data", "in", user_id, "tmp")
-    if os.path.exists(in_user_tmp_dir):
-        shutil.rmtree(in_user_tmp_dir)
-
-    read_files(user_id)
-
-    with ui.column():
-        with ui.header(elevated=True).style("background-color: #0070b4;").props("fit=scale-down").classes("q-pa-xs-xs"):
-            ui.image(join(ROOT, "data", "banner.png")).style("height: 90px; width: 443px;")
-        with ui.row():
-            with ui.column():
-                with ui.card().classes("border p-4"):
-                    with ui.card().style("width: min(40vw, 400px)"):
-                        upload_element = (
-                            ui.upload(
-                                multiple=True,
-                                on_upload=partial(handle_upload, user_id=user_id),
-                                on_rejected=handle_reject,
-                                label="Dateien auswählen",
-                                auto_upload=True,
-                                max_file_size=12_000_000_000,
-                                max_files=100,
-                            )
-                            .props('accept="video/*, audio/*, .zip"')
-                            .tooltip("Dateien auswählen")
-                            .classes("w-full")
-                            .style("width: 100%;")
-                        )
-                        upload_element.on(
-                            "uploaded",
-                            partial(
-                                handle_added,
-                                user_id=user_id,
-                                upload_element=upload_element,
-                                refresh_file_view=refresh_file_view,
-                            ),
-                        )
-
-                ui.label("")
-                
-                # Quick timer for checking file progress
-                ui.timer(
-                    1,  # Check frequently for better responsiveness
-                    partial(listen, user_id=user_id, refresh_file_view=refresh_file_view),
-                )
-                user_storage[user_id]["language"] = ui.select(
-                    [LANGUAGES[key] for key in LANGUAGES],
-                    value="deutsch",
-                    on_change=partial(update_language, user_id),
-                    label="Gesprochene Sprache",
-                ).style("width: min(40vw, 400px)")
-                with (
-                    ui.expansion("Vokabular", icon="menu_book")
-                    .classes("w-full no-wrap")
-                    .style("width: min(40vw, 400px)") as expansion
-                ):
-                    user_storage[user_id]["textarea"] = ui.textarea(
-                        label="Vokabular",
-                        placeholder="Zürich\nUster\nUitikon",
-                        on_change=partial(update_hotwords, user_id),
-                    ).classes("w-full h-full")
-                    hotwords = app.storage.user.get(f"{user_id}_vocab", "").strip()
-                    if hotwords:
-                        user_storage[user_id]["textarea"].value = hotwords
-                        expansion.open()
-                with (
-                    ui.expansion("Informationen", icon="help_outline")
-                    .classes("w-full no-wrap")
-                    .style("width: min(40vw, 400px)")
-                ):
-                    ui.label("Diese Prototyp-Applikation wurde vom Statistischen Amt & Amt für Informatik Kanton Zürich entwickelt.")
-                ui.button(
-                    "Anleitung öffnen",
-                    on_click=lambda: ui.open(help_page, new_tab=True),
-                ).props("no-caps")
-
-            display_files(user_id=user_id)
+            
+            # Setup periodic refresh
+            ui.timer(5.0, lambda: listen(user_id, refresh_file_view))
+            
+        with ui.tab_panel("settings"):
+            ui.label("Sprache:")
+            user_storage[user_id]["language"] = ui.select(
+                options=[(k, v) for k, v in LANGUAGES.items()],
+                value=LANGUAGES.get(app.storage.user.get(f"{user_id}_language", "de"), LANGUAGES["de"])
+            ).props("outlined")
+            
+            ui.button(
+                "Sprache speichern", 
+                on_click=lambda: update_language(user_id)
+            ).props("no-caps")
+            
+            ui.label("Vokabular (Wörter, Namen oder Begriffe, die häufig in der Aufnahme vorkommen):")
+            user_storage[user_id]["textarea"] = ui.textarea(
+                value=app.storage.user.get(f"{user_id}_vocab", ""),
+                placeholder="Namen und spezifische Begriffe, die im Text vorkommen (ein Begriff pro Zeile)"
+            ).classes("w-full").props("outlined")
+            
+            ui.button(
+                "Vokabular speichern", 
+                on_click=lambda: update_hotwords(user_id)
+            ).props("no-caps")
+            
+        with ui.tab_panel("help"):
+            help_page()
 
 
-if __name__ in {"__main__", "__mp_main__"}:
-    # Create all required directories at startup
-    for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
-        os.makedirs(join(ROOT, directory), exist_ok=True)
-    
-    # Configure static file serving for media files
-    # This makes all files in the 'data/out' directory accessible via /media URL
-    app.add_static_files('/media', join(ROOT, 'data', 'out'))
-    
-    if ONLINE:
-        ui.run(
-            port=8080,
-            title="TranscriboZH",
-            storage_secret=STORAGE_SECRET,
-            favicon=join(ROOT, "data", "logo.png"),
-        )
+# Configure static file serving for media files
+app.add_static_files("/media", join(ROOT, "data", "out"))
 
-        # run command with ssl certificate
-        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png")
-    else:
-        ui.run(
-            title="Transcribo",
-            host="127.0.0.1",
-            port=8080,
-            storage_secret=STORAGE_SECRET,
-            favicon=join(ROOT, "data", "logo.png"),
-        )
+# Setup secure storage
+if STORAGE_SECRET:
+    app.storage.user.use_secure_cookies = True
+    app.storage.user.secret_key = STORAGE_SECRET
+    app.storage.browser.use_secure_cookies = True 
+    app.storage.browser.secret_key = STORAGE_SECRET
+
+# Run the app with SSL if configured
+if SSL_CERTFILE and SSL_KEYFILE:
+    ui.run(ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE)
+else:
+    ui.run()
