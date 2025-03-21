@@ -4,7 +4,6 @@ import shutil
 import zipfile
 import datetime
 import base64
-import logging
 from os import listdir
 from os.path import isfile, join, normpath, basename, dirname
 from functools import partial
@@ -283,18 +282,42 @@ setTimeout(function() {{
 async def download_editor(file_name, user_id):
     """Simplified download function using direct src parameter."""
     try:
+        # Ensure output directory exists
+        out_user_dir = join(ROOT, "data", "out", user_id)
+        os.makedirs(out_user_dir, exist_ok=True)
+        
+        # Check if the source HTML file exists
+        html_file = join(out_user_dir, file_name + ".html")
+        if not os.path.exists(html_file):
+            error_msg = f"Original HTML file not found: {file_name}.html"
+            print(error_msg)
+            ui.notify(error_msg, color="negative")
+            return
+            
         # Prepare the final HTML file
-        prepare_download(file_name, user_id)
-        final_file_name = join(ROOT, "data", "out", user_id, file_name + ".htmlfinal")
+        try:
+            prepare_download(file_name, user_id)
+            print(f"Successfully prepared HTML file for download: {file_name}")
+        except Exception as prep_error:
+            error_msg = f"Error preparing download file: {str(prep_error)}"
+            print(error_msg)
+            ui.notify(error_msg, color="negative")
+            return
+            
+        final_file_name = join(out_user_dir, file_name + ".htmlfinal")
         
         # Verify the file exists and has content
         if not os.path.exists(final_file_name):
-            ui.notify(f"Error: File not found for download: {final_file_name}", color="negative")
+            error_msg = f"Final HTML file not found: {final_file_name}"
+            print(error_msg)
+            ui.notify(error_msg, color="negative")
             return
             
         file_size = os.path.getsize(final_file_name)
         if file_size == 0:
-            ui.notify("Error: Generated file is empty", color="negative")
+            error_msg = f"Generated file is empty: {final_file_name}"
+            print(error_msg)
+            ui.notify(error_msg, color="negative")
             return
             
         # Use direct src parameter instead of content - more reliable approach for this app
@@ -305,25 +328,37 @@ async def download_editor(file_name, user_id):
         )
         
         # Success notification
-        ui.notify(f"Download started: {download_filename}", color="positive")
+        success_msg = f"Download started: {download_filename}"
+        print(success_msg)
+        ui.notify(success_msg, color="positive")
     except Exception as e:
         # Handle any unexpected errors
-        ui.notify(f"Download error: {str(e)}", color="negative")
+        error_msg = f"Download error: {str(e)}"
+        print(error_msg)
+        ui.notify(error_msg, color="negative")
 
 
 async def download_srt(file_name, user_id):
     """Simplified download function for SRT files using direct src parameter."""
     try:
-        srt_file = join(ROOT, "data", "out", user_id, file_name + ".srt")
+        # Ensure output directory exists
+        out_user_dir = join(ROOT, "data", "out", user_id)
+        os.makedirs(out_user_dir, exist_ok=True)
+        
+        srt_file = join(out_user_dir, file_name + ".srt")
         
         # Verify the file exists
         if not os.path.exists(srt_file):
-            ui.notify(f"Error: SRT file not found: {file_name}.srt", color="negative")
+            error_msg = f"SRT file not found: {file_name}.srt"
+            print(error_msg)
+            ui.notify(error_msg, color="negative")
             return
             
         file_size = os.path.getsize(srt_file)
         if file_size == 0:
-            ui.notify("Error: SRT file is empty", color="negative")
+            error_msg = f"SRT file is empty: {file_name}.srt"
+            print(error_msg)
+            ui.notify(error_msg, color="negative")
             return
             
         # Use direct src parameter instead of content - more reliable approach for this app
@@ -334,10 +369,14 @@ async def download_srt(file_name, user_id):
         )
         
         # Success notification
-        ui.notify(f"Download started: {download_filename}", color="positive")
+        success_msg = f"Download started: {download_filename}"
+        print(success_msg)
+        ui.notify(success_msg, color="positive")
     except Exception as e:
         # Handle any unexpected errors
-        ui.notify(f"Download error: {str(e)}", color="negative")
+        error_msg = f"SRT download error: {str(e)}"
+        print(error_msg)
+        ui.notify(error_msg, color="negative")
 
 
 # We will use NiceGUI's built-in static file serving instead of a custom endpoint
@@ -368,23 +407,45 @@ async def open_editor(file_name, user_id):
 async def download_all(user_id):
     """Simplified download function for all files using direct src parameter."""
     try:
-        zip_file_path = join(ROOT, "data", "out", user_id, "transcribed_files.zip")
+        # Make sure output directory exists
+        out_dir = join(ROOT, "data", "out", user_id)
+        os.makedirs(out_dir, exist_ok=True)
+        
+        zip_file_path = join(out_dir, "transcribed_files.zip")
+        if os.path.exists(zip_file_path):
+            try:
+                os.remove(zip_file_path)  # Remove any existing zip file
+                print(f"Removed existing zip file: {zip_file_path}")
+            except Exception as e:
+                print(f"Error removing existing zip file: {str(e)}")
+                ui.notify(f"Could not remove existing zip file: {str(e)}", color="warning")
         
         # Create a new zip file
         with zipfile.ZipFile(zip_file_path, "w", allowZip64=True) as myzip:
             count = 0
+            errors = []
+            
             for file_status in user_storage[user_id]["file_list"]:
                 if file_status[2] == 100.0:
-                    # Prepare each file
-                    prepare_download(file_status[0], user_id)
-                    final_html = join(ROOT, "data", "out", user_id, file_status[0] + ".htmlfinal")
-                    
-                    # Verify the file exists before adding it
-                    if os.path.exists(final_html):
-                        myzip.write(final_html, arcname=file_status[0] + ".html")
-                        count += 1
-                    else:
-                        ui.notify(f"Warning: Could not find {file_status[0]}.htmlfinal", color="warning")
+                    try:
+                        # Prepare each file
+                        prepare_download(file_status[0], user_id)
+                        final_html = join(out_dir, file_status[0] + ".htmlfinal")
+                        
+                        # Verify the file exists before adding it
+                        if os.path.exists(final_html):
+                            myzip.write(final_html, arcname=file_status[0] + ".html")
+                            count += 1
+                            print(f"Added to zip: {file_status[0]}.html")
+                        else:
+                            error_msg = f"Could not find {file_status[0]}.htmlfinal"
+                            errors.append(error_msg)
+                            print(error_msg)
+                            ui.notify(f"Warning: {error_msg}", color="warning")
+                    except Exception as e:
+                        error_msg = f"Error processing {file_status[0]}: {str(e)}"
+                        errors.append(error_msg)
+                        print(error_msg)
         
         # Check if we actually added any files
         if count == 0:
@@ -404,18 +465,27 @@ async def download_all(user_id):
             filename="transcribed_files.zip"
         )
         
-        # Success notification
-        ui.notify(f"Download started: transcribed_files.zip with {count} files", color="positive")
+        # Show success notification with error summary if any
+        if errors:
+            ui.notify(f"Download started with {len(errors)} errors. See console for details.", color="warning")
+        else:
+            ui.notify(f"Download started: transcribed_files.zip with {count} files", color="positive")
         
         # Clean up the temp file after a delay to ensure download completes
         # We'll add a small delay to ensure the file is fully downloaded before cleaning up
         await ui.run_javascript("setTimeout(() => {}, 5000)")  # 5 second delay
         if os.path.exists(zip_file_path):
-            os.remove(zip_file_path)
+            try:
+                os.remove(zip_file_path)
+                print(f"Removed temporary zip file after download: {zip_file_path}")
+            except Exception as e:
+                print(f"Error removing temporary zip file: {str(e)}")
             
     except Exception as e:
         # Handle any unexpected errors
-        ui.notify(f"Download error: {str(e)}", color="negative")
+        error_msg = f"Download error: {str(e)}"
+        print(error_msg)
+        ui.notify(error_msg, color="negative")
 
 
 def delete_file(file_name, user_id, refresh_file_view):
@@ -437,9 +507,9 @@ def delete_file(file_name, user_id, refresh_file_view):
         if os.path.exists(path):
             try:
                 os.remove(path)
-                logging.info(f"Deleted file: {path}")
+                print(f"Deleted file: {path}")
             except Exception as e:
-                logging.error(f"Failed to delete {path}: {str(e)}")
+                print(f"Failed to delete {path}: {str(e)}")
 
     # Delete worker progress files that might be related to this file
     worker_user_dir = join(ROOT, "data", "worker", user_id)
@@ -448,9 +518,9 @@ def delete_file(file_name, user_id, refresh_file_view):
             if f.endswith(f"_{file_name}"):
                 try:
                     os.remove(join(worker_user_dir, f))
-                    logging.info(f"Deleted worker file: {join(worker_user_dir, f)}")
+                    print(f"Deleted worker file: {join(worker_user_dir, f)}")
                 except Exception as e:
-                    logging.error(f"Failed to delete worker file {join(worker_user_dir, f)}: {str(e)}")
+                    print(f"Failed to delete worker file {join(worker_user_dir, f)}: {str(e)}")
 
     refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
     ui.notify(f"Datei '{file_name}' wurde entfernt")
@@ -587,7 +657,6 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
         )
         ui.add_body_html(content)
 
-        # Add download function script
         ui.add_body_html(
             """
 <script language="javascript">
@@ -598,66 +667,118 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
 </script>
 """
         )
-        
-        # Video sync is now directly integrated in viewer.py
     else:
         ui.label("Session abgelaufen. Bitte öffne den Editor erneut.")
 
 
-def refresh_file_view(user_id, refresh_queue, refresh_results):
-    num_errors = len(user_storage[user_id]["known_errors"])
-    read_files(user_id)
-    if refresh_queue:
-        display_queue.refresh(user_id=user_id)
-    if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
-        display_results.refresh(user_id=user_id)
-
-
-@ui.refreshable
-def display_queue(user_id):
-    for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-        if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-            file_status = user_storage[user_id]["updates"]
-        if 0 <= file_status[2] < 100.0:
-            ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
-            ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
+def inspect_docker_container(user_id):
+    """Diagnostic function to check Docker container status related to progress updates."""
+    try:
+        result = ""
+        # Try to find information about running docker containers
+        print(f"DEBUG: Checking for docker containers that might handle transcription")
+        
+        # Check if user directories exist
+        worker_dir = join(ROOT, "data", "worker")
+        if not os.path.exists(worker_dir):
+            result += f"Worker directory {worker_dir} does not exist!\n"
+        else:
+            result += f"Worker directory {worker_dir} exists\n"
             
-            # Add delete button for queue entries
-            ui.button(
-                "Abbrechen",
-                on_click=partial(
-                    delete_file,
-                    file_name=file_status[0],
-                    user_id=user_id,
-                    refresh_file_view=refresh_file_view,
-                ),
-                color="red-5",
-            ).props("no-caps")
+            # Check user subdirectory
+            user_worker_dir = join(worker_dir, user_id)
+            if not os.path.exists(user_worker_dir):
+                result += f"User worker directory {user_worker_dir} does not exist!\n"
+                os.makedirs(user_worker_dir, exist_ok=True)
+                result += f"Created user worker directory\n"
+            else:
+                result += f"User worker directory {user_worker_dir} exists\n"
+                
+                # Check for progress files
+                try:
+                    files = listdir(user_worker_dir)
+                    result += f"Found {len(files)} files in user worker directory\n"
+                    for f in files:
+                        result += f"  - {f}\n"
+                except Exception as e:
+                    result += f"Error listing files in worker directory: {str(e)}\n"
+        
+        # Check if input files exist
+        in_dir = join(ROOT, "data", "in", user_id)
+        if os.path.exists(in_dir):
+            try:
+                files = [f for f in listdir(in_dir) if isfile(join(in_dir, f)) 
+                         and f != "hotwords.txt" and f != "language.txt"]
+                result += f"Found {len(files)} input files:\n"
+                for f in files:
+                    result += f"  - {f}\n"
+            except Exception as e:
+                result += f"Error listing input files: {str(e)}\n"
+        else:
+            result += f"Input directory {in_dir} does not exist!\n"
             
-            ui.separator()
+        return result
+    except Exception as e:
+        return f"Error in diagnostic function: {str(e)}"
 
 
-@ui.refreshable
-def display_results(user_id):
-    any_file_ready = False
-    for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-        if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-            file_status = user_storage[user_id]["updates"]
-        if file_status[2] >= 100.0:
-            ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
-            with ui.row():
-                ui.button(
-                    "Editor herunterladen (Lokal)",
-                    on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
-                ).props("no-caps")
-                ui.button(
-                    "Editor öffnen (Server)",
-                    on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
-                ).props("no-caps")
-                ui.button(
-                    "SRT-Datei",
-                    on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
-                ).props("no-caps")
+@ui.page("/")
+async def main_page():
+    """Main page of the application."""
+
+    def refresh_file_view(user_id, refresh_queue, refresh_results):
+        num_errors = len(user_storage[user_id]["known_errors"])
+        read_files(user_id)
+        if refresh_queue:
+            display_queue.refresh(user_id=user_id)
+        if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
+            display_results.refresh(user_id=user_id)
+
+    @ui.refreshable
+    def display_queue(user_id):
+        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+                file_status = user_storage[user_id]["updates"]
+            if 0 <= file_status[2] < 100.0:
+                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+                ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
+                ui.separator()
+
+    @ui.refreshable
+    def display_results(user_id):
+        any_file_ready = False
+        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+                file_status = user_storage[user_id]["updates"]
+            if file_status[2] >= 100.0:
+                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
+                with ui.row():
+                    ui.button(
+                        "Editor herunterladen (Lokal)",
+                        on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "Editor öffnen (Server)",
+                        on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "SRT-Datei",
+                        on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "Datei entfernen",
+                        on_click=partial(
+                            delete_file,
+                            file_name=file_status[0],
+                            user_id=user_id,
+                            refresh_file_view=refresh_file_view,
+                        ),
+                        color="red-5",
+                    ).props("no-caps")
+                    any_file_ready = True
+                ui.separator()
+            elif file_status[2] == -1:
+                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
                 ui.button(
                     "Datei entfernen",
                     on_click=partial(
@@ -668,123 +789,136 @@ def display_results(user_id):
                     ),
                     color="red-5",
                 ).props("no-caps")
-                any_file_ready = True
-            ui.separator()
-        elif file_status[2] == -1:
-            # Error files
-            ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
-            ui.markdown(f"**Fehler**: {file_status[1]}")
+                ui.separator()
+        if any_file_ready:
             ui.button(
-                "Datei entfernen",
-                on_click=partial(
-                    delete_file,
-                    file_name=file_status[0],
-                    user_id=user_id,
-                    refresh_file_view=refresh_file_view,
-                ),
-                color="red-5",
+                "Alle Dateien herunterladen",
+                on_click=partial(download_all, user_id=user_id),
             ).props("no-caps")
-            ui.separator()
-            
-    # Add download all button if any files are ready
-    if any_file_ready:
-        ui.button(
-            "Alle Dateien herunterladen",
-            on_click=partial(download_all, user_id=user_id),
-        ).props("no-caps")
 
-
-@ui.page("/")
-def main_page():
-    """Main page for file upload and transcription."""
-    # Get current user ID from browser storage
-    user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
-    
-    # Initialize storage if needed
-    if user_id not in user_storage:
-        user_storage[user_id] = {"file_list": [], "known_errors": set()}
-    
-    # Add logo and header
-    with ui.row().classes("items-center"):
-        ui.image("data/logo.png").style("max-width: 200px")
-        ui.label("Audio Transkription").classes("text-h4 q-ml-md")
-    
-    ui.separator()
-    
-    # Create tabs for different sections
-    with ui.tabs().classes("w-full") as tabs:
-        ui.tab("upload", "Datei hochladen")
-        ui.tab("files", "Dateien")
-        ui.tab("settings", "Einstellungen")
-        ui.tab("help", "Hilfe")
-        
-    with ui.tab_panels(tabs, value="upload").classes("w-full"):
-        with ui.tab_panel("upload"):
-            ui.label("Bitte wählen Sie eine Audio- oder Videodatei zum Hochladen aus:")
-            upload = ui.upload(
-                label="Datei auswählen",
-                auto_upload=True,
-                max_files=1,
-                max_file_size=12*1024*1024*1024,  # 12GB max
-                on_upload=lambda e: handle_upload(e, user_id),
-                on_rejected=handle_reject,
-                on_added=lambda e: handle_added(e, user_id, upload, refresh_file_view)
-            ).props("accept=audio/*,video/*")
-            
-            ui.button(
-                "Ausgewählte Datei hochladen", 
-                on_click=lambda: upload.upload()
-            ).props("no-caps")
-            
-        with ui.tab_panel("files"):
-            ui.label("Dateien in Bearbeitung:")
+    def display_files(user_id):
+        read_files(user_id)
+        with ui.card().classes("border p-4").style("width: min(60vw, 700px);"):
             display_queue(user_id=user_id)
-            
-            ui.label("Fertige Dateien:")
             display_results(user_id=user_id)
-            
-            # Setup periodic refresh
-            ui.timer(5.0, lambda: listen(user_id, refresh_file_view))
-            
-        with ui.tab_panel("settings"):
-            ui.label("Sprache:")
-            user_storage[user_id]["language"] = ui.select(
-                options=[(k, v) for k, v in LANGUAGES.items()],
-                value=LANGUAGES.get(app.storage.user.get(f"{user_id}_language", "de"), LANGUAGES["de"])
-            ).props("outlined")
-            
-            ui.button(
-                "Sprache speichern", 
-                on_click=lambda: update_language(user_id)
-            ).props("no-caps")
-            
-            ui.label("Vokabular (Wörter, Namen oder Begriffe, die häufig in der Aufnahme vorkommen):")
-            user_storage[user_id]["textarea"] = ui.textarea(
-                value=app.storage.user.get(f"{user_id}_vocab", ""),
-                placeholder="Namen und spezifische Begriffe, die im Text vorkommen (ein Begriff pro Zeile)"
-            ).classes("w-full").props("outlined")
-            
-            ui.button(
-                "Vokabular speichern", 
-                on_click=lambda: update_hotwords(user_id)
-            ).props("no-caps")
-            
-        with ui.tab_panel("help"):
-            help_page()
+
+    if ONLINE:
+        user_id = str(app.storage.browser.get("id", ""))
+    else:
+        user_id = "local"
+
+    user_storage[user_id] = {
+        "uploaded_files": set(),
+        "file_list": [],
+        "content": "",
+        "content_filename": "",
+        "file_in_progress": None,
+        "known_errors": set(),
+    }
+
+    in_user_tmp_dir = join(ROOT, "data", "in", user_id, "tmp")
+    if os.path.exists(in_user_tmp_dir):
+        shutil.rmtree(in_user_tmp_dir)
+
+    read_files(user_id)
+
+    with ui.column():
+        with ui.header(elevated=True).style("background-color: #0070b4;").props("fit=scale-down").classes("q-pa-xs-xs"):
+            ui.image(join(ROOT, "data", "banner.png")).style("height: 90px; width: 443px;")
+        with ui.row():
+            with ui.column():
+                with ui.card().classes("border p-4"):
+                    with ui.card().style("width: min(40vw, 400px)"):
+                        upload_element = (
+                            ui.upload(
+                                multiple=True,
+                                on_upload=partial(handle_upload, user_id=user_id),
+                                on_rejected=handle_reject,
+                                label="Dateien auswählen",
+                                auto_upload=True,
+                                max_file_size=12_000_000_000,
+                                max_files=100,
+                            )
+                            .props('accept="video/*, audio/*, .zip"')
+                            .tooltip("Dateien auswählen")
+                            .classes("w-full")
+                            .style("width: 100%;")
+                        )
+                        upload_element.on(
+                            "uploaded",
+                            partial(
+                                handle_added,
+                                user_id=user_id,
+                                upload_element=upload_element,
+                                refresh_file_view=refresh_file_view,
+                            ),
+                        )
+
+                ui.label("")
+                
+                # Quick timer for checking file progress
+                ui.timer(
+                    1,  # Check frequently for better responsiveness
+                    partial(listen, user_id=user_id, refresh_file_view=refresh_file_view),
+                )
+                user_storage[user_id]["language"] = ui.select(
+                    [LANGUAGES[key] for key in LANGUAGES],
+                    value="deutsch",
+                    on_change=partial(update_language, user_id),
+                    label="Gesprochene Sprache",
+                ).style("width: min(40vw, 400px)")
+                with (
+                    ui.expansion("Vokabular", icon="menu_book")
+                    .classes("w-full no-wrap")
+                    .style("width: min(40vw, 400px)") as expansion
+                ):
+                    user_storage[user_id]["textarea"] = ui.textarea(
+                        label="Vokabular",
+                        placeholder="Zürich\nUster\nUitikon",
+                        on_change=partial(update_hotwords, user_id),
+                    ).classes("w-full h-full")
+                    hotwords = app.storage.user.get(f"{user_id}_vocab", "").strip()
+                    if hotwords:
+                        user_storage[user_id]["textarea"].value = hotwords
+                        expansion.open()
+                with (
+                    ui.expansion("Informationen", icon="help_outline")
+                    .classes("w-full no-wrap")
+                    .style("width: min(40vw, 400px)")
+                ):
+                    ui.label("Diese Prototyp-Applikation wurde vom Statistischen Amt & Amt für Informatik Kanton Zürich entwickelt.")
+                ui.button(
+                    "Anleitung öffnen",
+                    on_click=lambda: ui.open(help_page, new_tab=True),
+                ).props("no-caps")
+
+            display_files(user_id=user_id)
 
 
-# Configure static file serving for media files
-app.add_static_files("/media", join(ROOT, "data", "out"))
+if __name__ in {"__main__", "__mp_main__"}:
+    # Create all required directories at startup
+    for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
+        os.makedirs(join(ROOT, directory), exist_ok=True)
+    
+    # Configure static file serving for media files
+    # This makes all files in the 'data/out' directory accessible via /media URL
+    app.add_static_files('/media', join(ROOT, 'data', 'out'))
+    
+    if ONLINE:
+        ui.run(
+            port=8080,
+            title="TranscriboZH",
+            storage_secret=STORAGE_SECRET,
+            favicon=join(ROOT, "data", "logo.png"),
+        )
 
-# Setup secure storage
-if STORAGE_SECRET:
-    app.storage.user.use_secure_cookies = True
-    app.storage.user.secret_key = STORAGE_SECRET
-    app.storage.browser.use_secure_cookies = True 
-    app.storage.browser.secret_key = STORAGE_SECRET
-
-# Run the app with SSL if configured
-if SSL_CERTFILE and SSL_KEYFILE:
-    ui.run(ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE)
-else:
-    ui.run()
+        # run command with ssl certificate
+        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png")
+    else:
+        ui.run(
+            title="Transcribo",
+            host="127.0.0.1",
+            port=8080,
+            storage_secret=STORAGE_SECRET,
+            favicon=join(ROOT, "data", "logo.png"),
+        )

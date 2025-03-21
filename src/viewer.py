@@ -103,6 +103,9 @@ def buttons():
     content += (
         '\t\t\t\t\t<a href ="#" id="download-link" onClick="downloadClick()" class="btn btn-primary">Speichern</a>\n'
     )
+    content += (
+        '\t\t\t\t\t<a href ="#" id="srt-link" onClick="srtClick()" class="btn btn-primary">SRT erstellen</a>\n'
+    )
     content += '\t\t\t\t\t<br><span>Verzögerung: </span><span contenteditable="true" id="delay" class="border rounded"></span>\n'
     content += '\t\t\t\t\t<input type="checkbox" id="ignore_lang" value="ignore_lang" style="margin-left: 5px" onclick="changeCheckbox(this)"/>\n'
     content += '\t\t\t\t\t<label for="ignore_lang">Fremdsprachen beim Exportieren entfernen</label>\n'
@@ -328,6 +331,13 @@ function textClick() {
     downloadText(content, "txt")
 }
 
+function srtClick() {
+    var content = document.documentElement.innerHTML;
+    var path = window.location.pathname;
+    var page = path.split("/").pop();
+    downloadSRT(content, "srt")
+}
+
 function download(content, fileType) {
     var link = document.getElementById("download-link");
     var file = new Blob([content], {type: fileType});
@@ -481,6 +491,109 @@ function downloadText(content, fileType) {
     var downloadFile = fileName + "." + fileType;
     link.href = URL.createObjectURL(file);
     link.download = downloadFile;
+}
+
+function downloadSRT(content, fileType) {
+    var link = document.getElementById("srt-link");
+    var ignore_lang = document.getElementById("ignore_lang").checked;
+    var segments = [];
+    
+    // Process HTML content to get segment data
+    content = content.replaceAll('contenteditable="true"', 'contenteditable="false"');
+    content = content.replaceAll('<p class="form-control">', '<p>');
+    
+    // Get the content within the editor div
+    var index_script = content.indexOf("<script language");
+    content = content.substr(0, index_script);
+    content = content.substr(content.indexOf('id="editor">'), content.length);
+    
+    // Parse all segments from the editor content
+    var htmlDoc = document.createElement('div');
+    htmlDoc.innerHTML = content;
+    var allSegmentDivs = htmlDoc.querySelectorAll('div');
+    
+    var currentIndex = 1; // SRT indices start at 1
+    var srtContent = "";
+    
+    // Process each segment in the editor
+    allSegmentDivs.forEach(function(div) {
+        // Skip divs without the necessary elements
+        if (!div.querySelector('select') || !div.querySelector('span[contenteditable="false"]')) return;
+        
+        // Check for foreign language flag
+        var languageCheckbox = div.querySelector('.language');
+        if (ignore_lang && languageCheckbox && languageCheckbox.checked) return;
+        
+        // Get timestamp from the span
+        var timestampSpan = div.querySelector('span[contenteditable="false"]');
+        if (!timestampSpan) return;
+        
+        var timestampText = timestampSpan.textContent.trim();
+        var startTime = parseTimestamp(timestampText);
+        
+        // Get the segment text
+        var textSegment = div.querySelector('p');
+        if (!textSegment) return;
+        
+        var segmentSpan = textSegment.querySelector('.segment');
+        if (!segmentSpan) return;
+        
+        var text = segmentSpan.textContent.trim();
+        if (!text) return;
+        
+        // Calculate end time (estimate based on text length)
+        // In a real implementation, we would use the actual end times from timestamps array
+        var endTime = startTime + Math.max(1, text.length * 0.05); // simple approximation
+        
+        // Add to SRT content
+        srtContent += currentIndex + "\\n";
+        srtContent += formatSRTTime(startTime) + " --> " + formatSRTTime(endTime) + "\\n";
+        
+        // Format text - split into multiple lines if too long
+        if (text.length > 40) {
+            var words = text.split(' ');
+            var totalLength = text.replace(/\\s+/g, '').length;
+            var midPoint = Math.floor(words.length / 2);
+            var firstHalf = words.slice(0, midPoint).join(' ');
+            var secondHalf = words.slice(midPoint).join(' ');
+            srtContent += firstHalf + "\\n" + secondHalf + "\\n\\n";
+        } else {
+            srtContent += text + "\\n\\n";
+        }
+        
+        currentIndex++;
+    });
+    
+    // Create and download file
+    var file = new Blob([srtContent], {type: "text/srt"});
+    var downloadFile = fileName + ".srt";
+    link.href = URL.createObjectURL(file);
+    link.download = downloadFile;
+    
+    // Helper function to parse timestamps like "0:01:30" to seconds
+    function parseTimestamp(timestamp) {
+        var parts = timestamp.split(':');
+        var seconds = 0;
+        if (parts.length === 3) {
+            seconds = parseInt(parts[0]) * 3600 + parseInt(parts[1]) * 60 + parseInt(parts[2]);
+        } else if (parts.length === 2) {
+            seconds = parseInt(parts[0]) * 60 + parseInt(parts[1]);
+        } else {
+            seconds = parseInt(parts[0]);
+        }
+        return seconds;
+    }
+    
+    // Format seconds to SRT time format (00:00:00,000)
+    function formatSRTTime(totalSeconds) {
+        var hours = Math.floor(totalSeconds / 3600);
+        var minutes = Math.floor((totalSeconds - (hours * 3600)) / 60);
+        var seconds = Math.floor(totalSeconds - (hours * 3600) - (minutes * 60));
+        var ms = Math.round((totalSeconds - Math.floor(totalSeconds)) * 1000);
+        
+        // Zero-pad as needed
+        return pad(hours, 2) + ":" + pad(minutes, 2) + ":" + pad(seconds, 2) + "," + pad(ms, 3);
+    }
 }
 
 function selectChange(selectObject) {
