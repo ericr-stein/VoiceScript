@@ -760,22 +760,28 @@ async def main_page():
 
     @ui.refreshable
     def display_queue(user_id):
-        with ui.column():
-            for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-                if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                    file_status = user_storage[user_id]["updates"]
-                if 0 <= file_status[2] < 100.0:
-                    # Each item is rendered as its own row within a vertical column
-                    with ui.row().classes("w-full items-center"):
-                        ui.markdown(
-                            f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}"
+        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+                file_status = user_storage[user_id]["updates"]
+            if 0 <= file_status[2] < 100.0:
+                # Simple row for text and cancel button
+                with ui.row().classes("w-full items-center"):
+                    ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}").classes("flex-grow")
+                    ui.button(
+                        icon="close", 
+                        color="red-5", 
+                        size="sm",
+                        on_click=partial(
+                            delete_file,
+                            file_name=file_status[0],
+                            user_id=user_id,
+                            refresh_file_view=refresh_file_view,
                         )
-                        # Add your cancel button here so it appears to the right
-                        ui.button("Cancel", on_click=lambda file=file_status[0]: cancel_transcription(file)).props("no-caps")
-                    ui.linear_progress(
-                        value=file_status[2] / 100, show_value=False, size="10px"
-                    ).props("instant-feedback")
-                    ui.separator()
+                    ).props("round flat")
+                
+                # Keep these outside any container - just like the original
+                ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
+                ui.separator()
 
     @ui.refreshable
     def display_results(user_id):
