@@ -761,8 +761,7 @@ async def main_page():
     @ui.refreshable
     def display_queue(user_id):
         for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
+            # No need to overwrite file_status here since the listen function already updates the file_list directly
             if 0 <= file_status[2] < 100.0:
                 # Create a container for each queue item
                 with ui.element("div").style("margin-bottom: 8px; width: 100%;"):
@@ -792,8 +791,7 @@ async def main_page():
     def display_results(user_id):
         any_file_ready = False
         for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
+            # No need to overwrite file_status here since the listen function already updates the file_list directly
             if file_status[2] >= 100.0:
                 ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
                 with ui.row():
