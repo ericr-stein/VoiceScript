@@ -758,24 +758,24 @@ async def main_page():
         if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
             display_results.refresh(user_id=user_id)
 
-@ui.refreshable
-def display_queue(user_id):
-    with ui.column():
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
-            if 0 <= file_status[2] < 100.0:
-                # Each item is rendered as its own row within a vertical column
-                with ui.row().classes("w-full items-center"):
-                    ui.markdown(
-                        f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}"
-                    )
-                    # Add your cancel button here so it appears to the right
-                    ui.button("Cancel", on_click=lambda file=file_status[0]: cancel_transcription(file)).props("no-caps")
-                ui.linear_progress(
-                    value=file_status[2] / 100, show_value=False, size="10px"
-                ).props("instant-feedback")
-                ui.separator()
+    @ui.refreshable
+    def display_queue(user_id):
+        with ui.column():
+            for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+                if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+                    file_status = user_storage[user_id]["updates"]
+                if 0 <= file_status[2] < 100.0:
+                    # Each item is rendered as its own row within a vertical column
+                    with ui.row().classes("w-full items-center"):
+                        ui.markdown(
+                            f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}"
+                        )
+                        # Add your cancel button here so it appears to the right
+                        ui.button("Cancel", on_click=lambda file=file_status[0]: cancel_transcription(file)).props("no-caps")
+                    ui.linear_progress(
+                        value=file_status[2] / 100, show_value=False, size="10px"
+                    ).props("instant-feedback")
+                    ui.separator()
 
     @ui.refreshable
     def display_results(user_id):
