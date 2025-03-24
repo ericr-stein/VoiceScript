@@ -5,7 +5,7 @@ import zipfile
 import datetime
 import base64
 from os import listdir
-from os.path import isfile, join, normpath, basename, dirname
+from os.path import isfile, join
 from functools import partial
 from dotenv import load_dotenv
 from nicegui import ui, events, app
@@ -23,23 +23,10 @@ load_dotenv()
 ONLINE = os.getenv("ONLINE") == "True"
 STORAGE_SECRET = os.getenv("STORAGE_SECRET")
 ROOT = os.getenv("ROOT")
-# Provide fallbacks for ROOT if it's not set
-if ROOT is None:
-    # Try to determine the root directory automatically
-    if os.path.exists(os.path.join(os.path.dirname(__file__), "data", "logo.png")):
-        # If executed directly
-        ROOT = os.path.dirname(__file__)
-    elif os.path.exists("data/logo.png"):
-        # If executed from project directory
-        ROOT = os.getcwd()
-    else:
-        # Final fallback - just use current directory
-        ROOT = os.getcwd()
-        print(f"WARNING: ROOT environment variable not set. Using {ROOT} as fallback.")
-
 WINDOWS = os.getenv("WINDOWS") == "True"
-SSL_CERTFILE = os.getenv("SSL_CERTFILE") 
+SSL_CERTFILE = os.getenv("SSL_CERTFILE")
 SSL_KEYFILE = os.getenv("SSL_KEYFILE")
+SUMMARIZATION = os.getenv("SUMMARIZATION") == "True"
 
 if WINDOWS:
     os.environ["PATH"] += os.pathsep + "ffmpeg/bin"
@@ -47,41 +34,6 @@ if WINDOWS:
 
 BACKSLASHCHAR = "\\"
 user_storage = {}
-
-
-def get_global_processing_queue():
-    """Get all files currently in the processing queue across all users."""
-    all_queued_files = []
-    
-    # Track filenames already added to the queue to prevent duplicates
-    processed_files = set()
-    
-    # Find all incomplete files across all users
-    for u_id in user_storage:
-        for file_status in user_storage[u_id].get("file_list", []):
-            # Only add files that:
-            # 1. Are in progress (0-100% complete)
-            # 2. Haven't been added already (prevents duplicates from .processing markers)
-            # 3. Don't have .processing extension (these are just markers)
-            filename = file_status[0]
-            unique_key = f"{u_id}_{filename}"
-            
-            if (0 <= file_status[2] < 100.0 and  # Incomplete files
-                unique_key not in processed_files and
-                not filename.endswith(".processing")):
-                
-                all_queued_files.append({
-                    "user_id": u_id,
-                    "filename": filename,
-                    "estimated_time": file_status[3],
-                    "upload_time": file_status[4],
-                    "progress": file_status[2]
-                })
-                processed_files.add(unique_key)
-    
-    # Sort by upload time (oldest first) to match worker's processing order
-    all_queued_files.sort(key=lambda x: x["upload_time"])
-    return all_queued_files
 
 
 def read_files(user_id):
@@ -93,11 +45,7 @@ def read_files(user_id):
 
     if os.path.exists(in_path):
         for f in listdir(in_path):
-            # Skip configuration files and processing markers
-            if (isfile(join(in_path, f)) and 
-                f != "hotwords.txt" and 
-                f != "language.txt" and
-                not f.endswith(".processing")):
+            if isfile(join(in_path, f)) and f != "hotwords.txt" and f != "language.txt":
                 file_status = [
                     f,
                     "Datei in Warteschlange. Geschätzte Wartezeit: ",
@@ -117,41 +65,23 @@ def read_files(user_id):
 
                 user_storage[user_id]["file_list"].append(file_status)
 
-        # Get the global processing queue
-        global_queue = get_global_processing_queue()
-        queue_size = len(global_queue)
-        
-        # Update each file's wait time and queue position based on its position in the global queue
+        files_in_queue = []
+        for u in user_storage:
+            for f in user_storage[u].get("file_list", []):
+                if (
+                    "updates" in user_storage[u]
+                    and len(user_storage[u]["updates"]) > 0
+                    and user_storage[u]["updates"][0] == f[0]
+                ):
+                    f = user_storage[u]["updates"]
+                if f[2] < 100.0:
+                    files_in_queue.append(f)
+
         for file_status in user_storage[user_id]["file_list"]:
-            if file_status[2] < 100.0:  # Only for incomplete files
-                wait_time = 0
-                queue_position = 0
-                file_found = False
-                
-                # Calculate position in queue and sum up processing times for all files ahead
-                for i, queued_file in enumerate(global_queue):
-                    if queued_file["user_id"] == user_id and queued_file["filename"] == file_status[0]:
-                        queue_position = i + 1  # Position is 1-based for user display
-                        file_found = True
-                        # For the file itself, only count remaining time based on progress
-                        if queued_file["progress"] > 0:
-                            remaining_ratio = 1.0 - (queued_file["progress"] / 100.0)
-                            wait_time += queued_file["estimated_time"] * remaining_ratio
-                        else:
-                            wait_time += queued_file["estimated_time"]
-                        break
-                    else:
-                        # For files ahead in queue, count full estimated time
-                        wait_time += queued_file["estimated_time"]
-                        
-                # Format and update the wait time and queue position display
-                wait_time_str = str(datetime.timedelta(seconds=round(wait_time)))
-                
-                # Different message for actively processed file (first in queue) vs waiting
-                if queue_position == 1 and file_found:
-                    file_status[1] = f"Wird verarbeitet. Geschätzte Restzeit: {wait_time_str}"
-                else:
-                    file_status[1] = f"Position {queue_position} von {queue_size} in Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
+            estimated_wait_time = sum(f[3] for f in files_in_queue if f[4] < file_status[4])
+            if file_status[2] < 100.0:
+                wait_time_str = str(datetime.timedelta(seconds=round(estimated_wait_time + file_status[3])))
+                file_status[1] += wait_time_str
 
     if os.path.exists(error_path):
         for f in listdir(error_path):
@@ -406,21 +336,14 @@ async def open_editor(file_name, user_id):
     with open(full_file_name, "r", encoding="utf-8") as f:
         content = f.read()
 
-    # Use the static file serving path instead of secure endpoint
-    video_path = f"/media/{user_id}/{file_name}.mp4"
-    
-    # Enhanced video element with better seeking support
-    enhanced_video_320 = f'<video id="player" width="100%" style="max-height: 320px" src="{video_path}" type="video/MP4" controls="controls" position="sticky" preload="auto" controlsList="nodownload"></video>'
-    enhanced_video_250 = f'<video id="player" width="100%" style="max-height: 250px" src="{video_path}" type="video/MP4" controls="controls" position="sticky" preload="auto" controlsList="nodownload"></video>'
-    
-    # Add preload="auto" to ensure media is fully loaded for seeking
+    video_path = f"/data/{user_id}/{file_name}.mp4"
     content = content.replace(
         '<video id="player" width="100%" style="max-height: 320px" src="" type="video/MP4" controls="controls" position="sticky"></video>',
-        enhanced_video_320,
+        f'<video id="player" width="100%" style="max-height: 320px" src="{video_path}" type="video/MP4" controls="controls" position="sticky"></video>',
     )
     content = content.replace(
         '<video id="player" width="100%" style="max-height: 250px" src="" type="video/MP4" controls="controls" position="sticky"></video>',
-        enhanced_video_250,
+        f'<video id="player" width="100%" style="max-height: 250px" src="{video_path}" type="video/MP4" controls="controls" position="sticky"></video>',
     )
 
     user_storage[user_id]["content"] = content
@@ -651,10 +574,10 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
 
         ui.notify("Änderungen gespeichert.")
 
-    # Get current user ID from browser storage
     user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
 
-    # We don't use app.add_media_files anymore - instead we use the secure endpoint
+    out_user_dir = join(ROOT, "data", "out", user_id)
+    app.add_media_files(f"/data/{user_id}", out_user_dir)
     user_data = user_storage.get(user_id, {})
     full_file_name = user_data.get("full_file_name")
 
@@ -764,88 +687,98 @@ async def main_page():
             if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
                 file_status = user_storage[user_id]["updates"]
             if 0 <= file_status[2] < 100.0:
-                # Simple row for text and cancel button
-                with ui.row().classes("w-full items-center"):
-                    ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}").classes("flex-grow")
-                    ui.button(
-                        icon="close", 
-                        color="red-5", 
-                        size="sm",
-                        on_click=partial(
-                            delete_file,
-                            file_name=file_status[0],
-                            user_id=user_id,
-                            refresh_file_view=refresh_file_view,
-                        )
-                    ).props("round flat")
-                
-                # Keep these outside any container - just like the original
+                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
                 ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
                 ui.separator()
 
     @ui.refreshable
     def display_results(user_id):
-        with ui.column().classes("w-full"):  # Add explicit column container for vertical stacking
-            any_file_ready = False
-            for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-                # No need to overwrite file_status here since the listen function already updates the file_list directly
-                if file_status[2] >= 100.0:
-                    # Use a card for consistent styling with queue items
-                    with ui.card().classes("w-full q-mb-sm").style("padding: 8px; margin-bottom: 8px;"):
-                        ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>").classes("q-mb-sm")
-                        
-                        # Use a responsive row for buttons
-                        with ui.row().classes("w-full wrap"):
-                            ui.button(
-                                "Editor herunterladen (Lokal)",
-                                on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
-                            ).props("no-caps").classes("q-mr-sm q-mb-sm")
-                            ui.button(
-                                "Editor öffnen (Server)",
-                                on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
-                            ).props("no-caps").classes("q-mr-sm q-mb-sm")
-                            ui.button(
-                                "SRT-Datei",
-                                on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
-                            ).props("no-caps").classes("q-mr-sm q-mb-sm")
-                            ui.button(
-                                "Datei entfernen",
-                                on_click=partial(
-                                    delete_file,
-                                    file_name=file_status[0],
-                                    user_id=user_id,
-                                    refresh_file_view=refresh_file_view,
-                                ),
-                                color="red-5",
-                            ).props("no-caps").classes("q-mb-sm")
-                            any_file_ready = True
-                    
-                    # Separator outside the card for better visual separation
-                    ui.separator()
-                elif file_status[2] == -1:
-                    # Error files
-                    with ui.card().classes("w-full q-mb-sm").style("padding: 8px; margin-bottom: 8px;"):
-                        ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}").classes("q-mb-sm")
-                        ui.button(
-                            "Datei entfernen",
+        any_file_ready = False
+        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+                file_status = user_storage[user_id]["updates"]
+            if file_status[2] >= 100.0:
+                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
+                with ui.row():
+                    ui.button(
+                        "Editor herunterladen (Lokal)",
+                        on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "Editor öffnen (Server)",
+                        on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "SRT-Datei",
+                        on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
+                    ).props("no-caps")
+                    ui.button(
+                        "Datei entfernen",
+                        on_click=partial(
+                            delete_file,
+                            file_name=file_status[0],
+                            user_id=user_id,
+                            refresh_file_view=refresh_file_view,
+                        ),
+                        color="red-5",
+                    ).props("no-caps")
+                    any_file_ready = True
+                if SUMMARIZATION:
+                    with ui.row():
+                        summary_create = ui.button(
+                            "Zusammenfassung erstellen",
                             on_click=partial(
-                                delete_file,
+                                summarize, file_name=file_status[0], user_id=user_id
+                            ),
+                        ).props("no-caps")
+                        summary_create.disable()
+                        summary_download = ui.button(
+                            "Zusammenfassung herunterladen",
+                            on_click=partial(
+                                download_summary,
                                 file_name=file_status[0],
                                 user_id=user_id,
-                                refresh_file_view=refresh_file_view,
                             ),
-                            color="red-5",
                         ).props("no-caps")
-                    
-                    # Separator outside the card for better visual separation
-                    ui.separator()
-            
-            # Download all button at the bottom of the column
-            if any_file_ready:
+                        summary_download.disable()
+
+                        if os.path.isfile(
+                            join(
+                                ROOT + "data/out",
+                                user_id,
+                                file_status[0] + ".htmlsummary",
+                            )
+                        ):
+                            summary_download.enable()
+                        if not os.path.isfile(
+                            join(
+                                ROOT + "data/out",
+                                user_id,
+                                file_status[0] + ".todosummary",
+                            )
+                        ):
+                            summary_create.enable()
+                        else:
+                            ui.label("in Bearbeitung")
+                ui.separator()
+            elif file_status[2] == -1:
+                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
                 ui.button(
-                    "Alle Dateien herunterladen",
-                    on_click=partial(download_all, user_id=user_id),
+                    "Datei entfernen",
+                    on_click=partial(
+                        delete_file,
+                        file_name=file_status[0],
+                        user_id=user_id,
+                        refresh_file_view=refresh_file_view,
+                    ),
+                    color="red-5",
                 ).props("no-caps")
+                ui.separator()
+        if any_file_ready:
+            ui.button(
+                "Alle Dateien herunterladen",
+                on_click=partial(download_all, user_id=user_id),
+            ).props("no-caps")
 
     def display_files(user_id):
         read_files(user_id)
@@ -950,10 +883,6 @@ if __name__ in {"__main__", "__mp_main__"}:
     # Create all required directories at startup
     for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
         os.makedirs(join(ROOT, directory), exist_ok=True)
-    
-    # Configure static file serving for media files
-    # This makes all files in the 'data/out' directory accessible via /media URL
-    app.add_static_files('/media', join(ROOT, 'data', 'out'))
     
     if ONLINE:
         ui.run(
