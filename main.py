@@ -45,7 +45,7 @@ def read_files(user_id):
 
     if os.path.exists(in_path):
         for f in listdir(in_path):
-            if isfile(join(in_path, f)) and f != "hotwords.txt" and f != "language.txt":
+            if isfile(join(in_path, f)) and f != "hotwords.txt" and f != "language.txt" and not f.endswith(".processing"):
                 file_status = [
                     f,
                     "Datei in Warteschlange. Geschätzte Wartezeit: ",
@@ -77,11 +77,27 @@ def read_files(user_id):
                 if f[2] < 100.0:
                     files_in_queue.append(f)
 
+        # Sort the queue by modification time (older files first)
+        sorted_queue = sorted(files_in_queue, key=lambda x: x[4])
+
         for file_status in user_storage[user_id]["file_list"]:
-            estimated_wait_time = sum(f[3] for f in files_in_queue if f[4] < file_status[4])
             if file_status[2] < 100.0:
+                # Get position in queue (1-based)
+                queue_position = next((i + 1 for i, f in enumerate(sorted_queue) if f[0] == file_status[0]), 0)
+                
+                # If currently processing, show as position 1
+                if "updates" in user_storage[user_id] and len(user_storage[user_id]["updates"]) > 0 and user_storage[user_id]["updates"][0] == file_status[0]:
+                    queue_position = 1
+                
+                # Get total queue size
+                queue_size = len(sorted_queue)
+                
+                # Calculate estimated wait time
+                estimated_wait_time = sum(f[3] for f in files_in_queue if f[4] < file_status[4])
                 wait_time_str = str(datetime.timedelta(seconds=round(estimated_wait_time + file_status[3])))
-                file_status[1] += wait_time_str
+                
+                # Update status message with position
+                file_status[1] = f"Position {queue_position}/{queue_size} in der Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
 
     if os.path.exists(error_path):
         for f in listdir(error_path):
@@ -498,9 +514,9 @@ def listen(user_id, refresh_file_view):
                 if os.path.exists(in_file):
                     # Show different message for post-processing phase vs normal transcription
                     if progress > 0.95:
-                        status_message = "Datei wird nachbearbeitet... (SRT-Datei wird erzeugt, Editor wird erstellt)"
+                        status_message = f"Position 1/1 in der Warteschlange. Datei wird nachbearbeitet... (SRT-Datei wird erzeugt, Editor wird erstellt)"
                     else:
-                        status_message = f"Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}"
+                        status_message = f"Position 1/1 in der Warteschlange. Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}"
                     
                     user_storage[user_id]["updates"] = [
                         file_name,
