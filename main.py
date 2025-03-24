@@ -74,9 +74,6 @@ def read_files(user_id):
                     and user_storage[u]["updates"][0] == f[0]
                 ):
                     f = user_storage[u]["updates"]
-                # Skip .processing files
-                if f[0].endswith(".processing"):
-                    continue
                 if f[2] < 100.0:
                     files_in_queue.append(f)
 
@@ -689,23 +686,18 @@ async def main_page():
         for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
             if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
                 file_status = user_storage[user_id]["updates"]
-            # Skip processing files to avoid duplicates
-            if file_status[0].endswith(".processing"):
-                continue
             if 0 <= file_status[2] < 100.0:
                 ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
-                # Add cancel button
                 ui.button(
-                    icon="close", 
-                    color="red-5", 
-                    size="sm",
+                    "Abbrechen",
                     on_click=partial(
                         delete_file,
                         file_name=file_status[0],
                         user_id=user_id,
                         refresh_file_view=refresh_file_view,
-                    )
-                ).props("round flat").classes("float-right")
+                    ),
+                    color="red-5",
+                ).props("no-caps")
                 ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
                 ui.separator()
 
