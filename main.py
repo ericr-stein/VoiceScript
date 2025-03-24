@@ -760,83 +760,105 @@ async def main_page():
 
     @ui.refreshable
     def display_queue(user_id):
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            # No need to overwrite file_status here since the listen function already updates the file_list directly
-            if 0 <= file_status[2] < 100.0:
-                # Create a container for each queue item
-                with ui.element("div").style("margin-bottom: 8px; width: 100%;"):
-                    # Use row for the filename/status and delete button
-                    with ui.row().classes("items-center w-full no-wrap"):
-                        # Text on left, growing to fill space
-                        ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}").classes("flex-grow")
+        with ui.column().classes("w-full"):  # Add explicit column container for vertical stacking
+            for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+                # No need to overwrite file_status here since the listen function already updates the file_list directly
+                if 0 <= file_status[2] < 100.0:
+                    # Create a container for each queue item
+                    with ui.card().classes("w-full q-mb-sm").style("padding: 8px; margin-bottom: 8px;"):
+                        # Use row with proper justification classes
+                        with ui.row().classes("w-full items-center justify-between"):
+                            # Text on left with proper containment
+                            ui.markdown(
+                                f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}"
+                            ).classes("flex-grow")
+                            
+                            # Cancel button with improved visibility
+                            ui.button(
+                                icon="close", 
+                                color="red-5", 
+                                size="sm",
+                                on_click=partial(
+                                    delete_file,
+                                    file_name=file_status[0],
+                                    user_id=user_id,
+                                    refresh_file_view=refresh_file_view,
+                                )
+                            ).props("round flat").style("min-width: 36px; min-height: 36px;")
                         
-                        # Cancel button on right with explicit visibility and styling
+                        # Progress bar with proper width
+                        ui.linear_progress(
+                            value=file_status[2] / 100, 
+                            show_value=False, 
+                            size="10px"
+                        ).props("instant-feedback").classes("w-full")
+                    
+                    # Separator outside the card for better visual separation
+                    ui.separator()
+
+    @ui.refreshable
+    def display_results(user_id):
+        with ui.column().classes("w-full"):  # Add explicit column container for vertical stacking
+            any_file_ready = False
+            for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
+                # No need to overwrite file_status here since the listen function already updates the file_list directly
+                if file_status[2] >= 100.0:
+                    # Use a card for consistent styling with queue items
+                    with ui.card().classes("w-full q-mb-sm").style("padding: 8px; margin-bottom: 8px;"):
+                        ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>").classes("q-mb-sm")
+                        
+                        # Use a responsive row for buttons
+                        with ui.row().classes("w-full wrap"):
+                            ui.button(
+                                "Editor herunterladen (Lokal)",
+                                on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
+                            ).props("no-caps").classes("q-mr-sm q-mb-sm")
+                            ui.button(
+                                "Editor öffnen (Server)",
+                                on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
+                            ).props("no-caps").classes("q-mr-sm q-mb-sm")
+                            ui.button(
+                                "SRT-Datei",
+                                on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
+                            ).props("no-caps").classes("q-mr-sm q-mb-sm")
+                            ui.button(
+                                "Datei entfernen",
+                                on_click=partial(
+                                    delete_file,
+                                    file_name=file_status[0],
+                                    user_id=user_id,
+                                    refresh_file_view=refresh_file_view,
+                                ),
+                                color="red-5",
+                            ).props("no-caps").classes("q-mb-sm")
+                            any_file_ready = True
+                    
+                    # Separator outside the card for better visual separation
+                    ui.separator()
+                elif file_status[2] == -1:
+                    # Error files
+                    with ui.card().classes("w-full q-mb-sm").style("padding: 8px; margin-bottom: 8px;"):
+                        ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}").classes("q-mb-sm")
                         ui.button(
-                            icon="close", 
-                            color="red-5", 
-                            size="sm",
+                            "Datei entfernen",
                             on_click=partial(
                                 delete_file,
                                 file_name=file_status[0],
                                 user_id=user_id,
                                 refresh_file_view=refresh_file_view,
-                            )
-                        ).props("round flat").style("display: flex; visibility: visible; min-width: 36px; min-height: 36px;")
+                            ),
+                            color="red-5",
+                        ).props("no-caps")
                     
-                    # Progress bar below the row
-                    ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
+                    # Separator outside the card for better visual separation
                     ui.separator()
-
-    @ui.refreshable
-    def display_results(user_id):
-        any_file_ready = False
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            # No need to overwrite file_status here since the listen function already updates the file_list directly
-            if file_status[2] >= 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
-                with ui.row():
-                    ui.button(
-                        "Editor herunterladen (Lokal)",
-                        on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "Editor öffnen (Server)",
-                        on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "SRT-Datei",
-                        on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "Datei entfernen",
-                        on_click=partial(
-                            delete_file,
-                            file_name=file_status[0],
-                            user_id=user_id,
-                            refresh_file_view=refresh_file_view,
-                        ),
-                        color="red-5",
-                    ).props("no-caps")
-                    any_file_ready = True
-                ui.separator()
-            elif file_status[2] == -1:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+            
+            # Download all button at the bottom of the column
+            if any_file_ready:
                 ui.button(
-                    "Datei entfernen",
-                    on_click=partial(
-                        delete_file,
-                        file_name=file_status[0],
-                        user_id=user_id,
-                        refresh_file_view=refresh_file_view,
-                    ),
-                    color="red-5",
+                    "Alle Dateien herunterladen",
+                    on_click=partial(download_all, user_id=user_id),
                 ).props("no-caps")
-                ui.separator()
-        if any_file_ready:
-            ui.button(
-                "Alle Dateien herunterladen",
-                on_click=partial(download_all, user_id=user_id),
-            ).props("no-caps")
 
     def display_files(user_id):
         read_files(user_id)
