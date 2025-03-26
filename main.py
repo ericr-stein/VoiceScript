@@ -5,6 +5,7 @@ import zipfile
 import datetime
 import base64
 import traceback
+import uuid
 from os import listdir
 from os.path import isfile, join
 from functools import partial
@@ -12,13 +13,22 @@ from dotenv import load_dotenv
 from nicegui import ui, events, app
 from datetime import datetime
 
-# Direct file logging for diagnosing freezes
-UI_DEBUG_LOG_PATH = "ui_debug.log"
+# Set up initial logging with default paths
+# These will be updated after environment variables are loaded
+LOGS_DIR = "data/logs"  # Default path
+UI_DEBUG_LOG_PATH = "data/logs/ui_debug.log"  # Default path
 
 def ui_debug_log(message, important=False):
     """Write directly to a file even if the container freezes"""
     try:
+        # Ensure logs directory exists
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        
+        # Also print to stdout for immediate feedback
+        print(f"[LOG] {timestamp} - {message}")
+        
         with open(UI_DEBUG_LOG_PATH, "a") as f:
             if important:
                 line = f"[{timestamp}] !!! CRITICAL OPERATION !!! {message}\n"
@@ -26,14 +36,20 @@ def ui_debug_log(message, important=False):
                 line = f"[{timestamp}] {message}\n"
             f.write(line)
             f.flush()  # Force write to disk
+            os.fsync(f.fileno())  # Ensure OS flushes to disk
     except Exception as e:
-        # Cannot use normal logging if process is frozen
+        # Print to stdout if logging fails
+        print(f"ERROR LOGGING TO FILE: {str(e)}")
+        # Try emergency log
         try:
-            with open("ui_debug_error.log", "a") as f:
+            emergency_log = os.path.join(os.path.dirname(UI_DEBUG_LOG_PATH), "ui_debug_error.log")
+            os.makedirs(os.path.dirname(emergency_log), exist_ok=True)
+            with open(emergency_log, "a") as f:
                 f.write(f"Error in ui_debug_log: {str(e)}\n")
                 f.flush()
-        except:
-            pass
+                os.fsync(f.fileno())
+        except Exception as inner_e:
+            print(f"CRITICAL: All logging attempts failed: {str(inner_e)}")
 
 from data.const import LANGUAGES, INVERTED_LANGUAGES
 from src.util import time_estimate
@@ -52,6 +68,19 @@ WINDOWS = os.getenv("WINDOWS") == "True"
 SSL_CERTFILE = os.getenv("SSL_CERTFILE")
 SSL_KEYFILE = os.getenv("SSL_KEYFILE")
 SUMMARIZATION = os.getenv("SUMMARIZATION") == "True"
+
+# Update log paths now that ROOT is defined
+if ROOT:
+    print(f"Updating log paths using ROOT={ROOT}")
+    LOGS_DIR = join(ROOT, "data", "logs")
+    UI_DEBUG_LOG_PATH = join(LOGS_DIR, "ui_debug.log")
+    
+    # Ensure logs directory exists
+    try:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        print(f"Created logs directory at {LOGS_DIR}")
+    except Exception as e:
+        print(f"ERROR creating logs directory: {str(e)}")
 
 # Removed throttling mechanism as it was addressing a symptom, not the root cause
 

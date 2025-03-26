@@ -42,13 +42,34 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE"))
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# File-based direct debug logging that works even if container freezes
-DEBUG_LOG_PATH = "worker_debug.log"
+# Initial default log paths - will be updated after env vars are loaded
+LOGS_DIR = "data/logs"  # Default path
+DEBUG_LOG_PATH = "data/logs/worker_debug.log"  # Default path
+
+# Update log paths now that ROOT is defined
+if ROOT:
+    print(f"Updating worker log paths using ROOT={ROOT}")
+    LOGS_DIR = join(ROOT, "data", "logs") 
+    DEBUG_LOG_PATH = join(LOGS_DIR, "worker_debug.log")
+    
+    # Ensure logs directory exists
+    try:
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        print(f"Created logs directory at {LOGS_DIR}")
+    except Exception as e:
+        print(f"ERROR creating logs directory: {str(e)}")
 
 def debug_log(message, important=False):
     """Write directly to a file even if the container freezes"""
     try:
+        # Ensure logs directory exists
+        os.makedirs(LOGS_DIR, exist_ok=True)
+        
         timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        
+        # Also print to stdout for immediate feedback
+        print(f"[LOG] {timestamp} - {message}")
+        
         with open(DEBUG_LOG_PATH, "a") as f:
             if important:
                 line = f"[{timestamp}] !!! CRITICAL OPERATION !!! {message}\n"
@@ -56,14 +77,20 @@ def debug_log(message, important=False):
                 line = f"[{timestamp}] {message}\n"
             f.write(line)
             f.flush()  # Force write to disk
+            os.fsync(f.fileno())  # Ensure OS flushes to disk
     except Exception as e:
-        # Cannot use logging here as it might be blocked
+        # Print to stdout if logging fails
+        print(f"ERROR LOGGING TO FILE: {str(e)}")
+        # Try emergency log
         try:
-            with open("debug_error.log", "a") as f:
+            emergency_log = os.path.join(os.path.dirname(DEBUG_LOG_PATH), "worker_debug_error.log")
+            os.makedirs(os.path.dirname(emergency_log), exist_ok=True)
+            with open(emergency_log, "a") as f:
                 f.write(f"Error in debug_log: {str(e)}\n")
                 f.flush()
-        except:
-            pass
+                os.fsync(f.fileno())
+        except Exception as inner_e:
+            print(f"CRITICAL: All logging attempts failed: {str(inner_e)}")
             
 def measure_time(operation_name, important=False):
     """Decorator to measure time of operations and log directly to file"""
