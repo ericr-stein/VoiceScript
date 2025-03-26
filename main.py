@@ -4,11 +4,80 @@ import shutil
 import zipfile
 import datetime
 import base64
+import traceback
+import asyncio
 from os import listdir
 from os.path import isfile, join
 from functools import partial
+from datetime import datetime
 from dotenv import load_dotenv
 from nicegui import ui, events, app
+
+# Add debug log file path
+UI_DEBUG_LOG_PATH = "ui_debug.log"
+
+def ui_debug_log(message, important=False):
+    """Write directly to a file even if the UI freezes"""
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(UI_DEBUG_LOG_PATH, "a") as f:
+            if important:
+                line = f"[{timestamp}] !!! IMPORTANT !!! {message}\n"
+            else:
+                line = f"[{timestamp}] {message}\n"
+            f.write(line)
+            f.flush()  # Force write to disk
+    except Exception as e:
+        # Cannot use regular logging as it might be blocked
+        try:
+            with open("ui_debug_error.log", "a") as f:
+                f.write(f"Error in ui_debug_log: {str(e)}\n")
+                f.flush()
+        except:
+            pass
+
+def measure_time(operation_name, important=False):
+    """Decorator to measure time of operations and log directly to file"""
+    def decorator(func):
+        async def async_wrapper(*args, **kwargs):
+            ui_debug_log(f"Starting async {operation_name}", important)
+            start_time = time.time()
+            result = None; error = None
+            try:
+                result = await func(*args, **kwargs)
+                return result
+            except Exception as e: 
+                error = e
+                ui_debug_log(f"ERROR in async {operation_name}: {e}\n{traceback.format_exc()}", True)
+                raise
+            finally:
+                duration = time.time() - start_time
+                status = "completed" if error is None else "failed"
+                log_imp = important or duration > 1.0
+                ui_debug_log(f"Async {operation_name} {status} in {duration:.4f}s", log_imp)
+
+        def sync_wrapper(*args, **kwargs):
+            ui_debug_log(f"Starting sync {operation_name}", important)
+            start_time = time.time()
+            result = None; error = None
+            try:
+                result = func(*args, **kwargs)
+                return result
+            except Exception as e: 
+                error = e
+                ui_debug_log(f"ERROR in sync {operation_name}: {e}\n{traceback.format_exc()}", True)
+                raise
+            finally:
+                duration = time.time() - start_time
+                status = "completed" if error is None else "failed"
+                log_imp = important or duration > 1.0
+                ui_debug_log(f"Sync {operation_name} {status} in {duration:.4f}s", log_imp)
+
+        if asyncio.iscoroutinefunction(func):
+            return async_wrapper
+        else:
+            return sync_wrapper
+    return decorator
 
 from data.const import LANGUAGES, INVERTED_LANGUAGES
 from src.util import time_estimate
@@ -36,6 +105,7 @@ BACKSLASHCHAR = "\\"
 user_storage = {}
 
 
+@measure_time("read_files", important=True)
 def read_files(user_id):
     """Read in all files of the user and set the file status if known."""
     user_storage[user_id]["file_list"] = []
@@ -428,13 +498,19 @@ def delete_file(file_name, user_id, refresh_file_view):
     ui.notify(f"Datei '{file_name}' wurde entfernt")
 
 
+@measure_time("listen", important=False)
 def listen(user_id, refresh_file_view):
     """Periodically check if a file is being transcribed and calculate its estimated progress."""
+    listen_start = time.time()
     worker_user_dir = join(ROOT, "data", "worker", user_id)
     
     if os.path.exists(worker_user_dir):
+        ui_debug_log(f"[DEBUG-LISTEN] Checking worker directory for user {user_id}")
         worker_files = listdir(worker_user_dir)
         
+        if worker_files:
+            ui_debug_log(f"[DEBUG-LISTEN] Found {len(worker_files)} worker files")
+            
         for f in worker_files:
             file_path = join(worker_user_dir, f)
             
@@ -450,12 +526,15 @@ def listen(user_id, refresh_file_view):
                 estimated_time_left = round(max(1, estimated_time - (time.time() - start)))
 
                 in_file = join(ROOT, "data", "in", user_id, file_name)
+                ui_debug_log(f"[DEBUG-LISTEN] Checking in_file: {in_file}, exists={os.path.exists(in_file)}")
                 if os.path.exists(in_file):
                     # Show different message for post-processing phase vs normal transcription
                     if progress > 0.95:
                         status_message = f"Position 1/1 in der Warteschlange. Datei wird nachbearbeitet... (SRT-Datei wird erzeugt, Editor wird erstellt)"
+                        ui_debug_log(f"[DEBUG-LISTEN] File {file_name} in post-processing phase ({progress*100:.1f}%)")
                     else:
                         status_message = f"Position 1/1 in der Warteschlange. Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}"
+                        ui_debug_log(f"[DEBUG-LISTEN] File {file_name} in transcription phase ({progress*100:.1f}%), est. time left: {estimated_time_left}s")
                     
                     user_storage[user_id]["updates"] = [
                         file_name,
@@ -472,23 +551,44 @@ def listen(user_id, refresh_file_view):
                             user_storage[user_id]["file_list"][i] = user_storage[user_id]["updates"]
                             updated = True
                             break
+                            
+                    ui_debug_log(f"[DEBUG-LISTEN] Updated progress for file {file_name}: {progress*100:.1f}%")
                 else:
+                    ui_debug_log(f"[DEBUG-LISTEN] Input file {file_name} no longer exists, removing progress file", important=True)
                     os.remove(file_path)
                     
+                refresh_start = time.time()
+                should_refresh_results = (user_storage[user_id].get("file_in_progress") != file_name)
+                ui_debug_log(f"[DEBUG-LISTEN] Refreshing view with refresh_results={should_refresh_results}")
+                
                 refresh_file_view(
                     user_id=user_id,
                     refresh_queue=True,
-                    refresh_results=(user_storage[user_id].get("file_in_progress") != file_name),
+                    refresh_results=should_refresh_results,
                 )
+                refresh_end = time.time()
+                ui_debug_log(f"[DEBUG-LISTEN] refresh_file_view took {refresh_end - refresh_start:.4f}s")
+                
                 user_storage[user_id]["file_in_progress"] = file_name
                 return
 
-        # No files being processed
+        # No files being processed - POTENTIALLY CRITICAL POINT
         if user_storage[user_id].get("updates"):
+            ui_debug_log(f"[DEBUG-LISTEN] POTENTIALLY CRITICAL POINT: No files being processed, clearing updates", important=True)
             user_storage[user_id]["updates"] = []
             user_storage[user_id]["file_in_progress"] = None
+            
+            # Add a small delay before refresh to avoid race condition
+            ui_debug_log(f"[DEBUG-LISTEN] Adding 0.5s delay before refresh_file_view to avoid race condition")
+            time.sleep(0.5)
+            
+            refresh_start = time.time()
+            ui_debug_log(f"[DEBUG-LISTEN] Calling refresh_file_view with refresh_results=True after delay")
             refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
+            refresh_end = time.time()
+            ui_debug_log(f"[DEBUG-LISTEN] refresh_file_view took {refresh_end - refresh_start:.4f}s")
         else:
+            ui_debug_log(f"[DEBUG-LISTEN] No updates to clear, refreshing queue only")
             refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
 
 
@@ -629,12 +729,47 @@ async def main_page():
     """Main page of the application."""
 
     def refresh_file_view(user_id, refresh_queue, refresh_results):
-        num_errors = len(user_storage[user_id]["known_errors"])
-        read_files(user_id)
-        if refresh_queue:
-            display_queue.refresh(user_id=user_id)
-        if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
-            display_results.refresh(user_id=user_id)
+        refresh_start_time = time.time()
+        ui_debug_log(f"Starting refresh_file_view (queue={refresh_queue}, results={refresh_results}) for user {user_id}", important=refresh_results)
+
+        try:
+            # --- Time read_files call ---
+            num_errors_before = len(user_storage[user_id].get("known_errors", set()))
+            read_files(user_id)  # This now has its own internal timing log
+            num_errors_after = len(user_storage[user_id].get("known_errors", set()))
+
+            # --- Time Queue Refresh ---
+            if refresh_queue:
+                queue_refresh_start = time.time()
+                ui_debug_log(f"Calling display_queue.refresh() for user {user_id}")
+                try:
+                    display_queue.refresh(user_id=user_id)
+                    queue_refresh_end = time.time()
+                    ui_debug_log(f"Finished display_queue.refresh() in {queue_refresh_end - queue_refresh_start:.4f}s")
+                except Exception as e:
+                     ui_debug_log(f"ERROR during display_queue.refresh(): {e}", True)
+
+            # --- Time Results Refresh ---
+            # Trigger results refresh if explicitly requested OR if the number of errors changed
+            should_refresh_results = refresh_results or (num_errors_before != num_errors_after)
+            if should_refresh_results:
+                results_refresh_start = time.time()
+                ui_debug_log(f"Calling display_results.refresh() for user {user_id}", important=True)
+                try:
+                    display_results.refresh(user_id=user_id)
+                    results_refresh_end = time.time()
+                    duration = results_refresh_end - results_refresh_start
+                    ui_debug_log(f"Finished display_results.refresh() in {duration:.4f}s", important=True)
+                    if duration > 0.5:  # Highlight potentially slow refreshes
+                         ui_debug_log(f"WARNING: display_results.refresh() took {duration:.4f}s", True)
+                except Exception as e:
+                     ui_debug_log(f"ERROR during display_results.refresh(): {e}", True)
+
+        except Exception as e:
+             ui_debug_log(f"ERROR in refresh_file_view: {e}", True)
+        finally:
+            refresh_end_time = time.time()
+            ui_debug_log(f"Finished refresh_file_view in {refresh_end_time - refresh_start_time:.4f}s", important=refresh_results)
 
     @ui.refreshable
     def display_queue(user_id):
@@ -657,26 +792,99 @@ async def main_page():
                 ui.separator()
 
     @ui.refreshable
+    @measure_time("display_results", important=True)
     def display_results(user_id):
-        any_file_ready = False
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
-            if file_status[2] >= 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
-                with ui.row():
-                    ui.button(
-                        "Editor herunterladen (Lokal)",
-                        on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "Editor öffnen (Server)",
-                        on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "SRT-Datei",
-                        on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
+        func_start_time = time.time()
+        ui_debug_log(f"Starting display_results for user {user_id}", important=True)
+        
+        try:
+            # --- Time File List Generation & Sorting ---
+            list_gen_start = time.time()
+            # Filter and sort files
+            user_files_completed = [f for f in user_storage[user_id].get('file_list', []) if f[2] == 100.0]
+            user_files_error = [f for f in user_storage[user_id].get('file_list', []) if f[2] == -1]
+            
+            # Combine and sort - errors might appear first or last depending on preference
+            user_files_sorted = sorted(user_files_error, key=lambda x: x[4], reverse=True) + \
+                               sorted(user_files_completed, key=lambda x: x[4], reverse=True)
+            
+            list_gen_end = time.time()
+            ui_debug_log(f"Generated/sorted file list ({len(user_files_sorted)} items) in {list_gen_end - list_gen_start:.4f}s")
+            
+            # --- Time UI Element Creation Loop ---
+            ui_loop_start = time.time()
+            any_file_ready = False
+            
+            for file_status in user_files_sorted:
+                if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
+                    file_status = user_storage[user_id]["updates"]
+                
+                if file_status[2] >= 100.0:
+                    ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
+                    with ui.row():
+                        ui.button(
+                            "Editor herunterladen (Lokal)",
+                            on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
+                        ).props("no-caps")
+                        ui.button(
+                            "Editor öffnen (Server)",
+                            on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
+                        ).props("no-caps")
+                        ui.button(
+                            "SRT-Datei",
+                            on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
+                        ).props("no-caps")
+                        ui.button(
+                            "Datei entfernen",
+                            on_click=partial(
+                                delete_file,
+                                file_name=file_status[0],
+                                user_id=user_id,
+                                refresh_file_view=refresh_file_view,
+                            ),
+                            color="red-5",
+                        ).props("no-caps")
+                        any_file_ready = True
+                    if SUMMARIZATION:
+                        with ui.row():
+                            summary_create = ui.button(
+                                "Zusammenfassung erstellen",
+                                on_click=partial(
+                                    summarize, file_name=file_status[0], user_id=user_id
+                                ),
+                            ).props("no-caps")
+                            summary_create.disable()
+                            summary_download = ui.button(
+                                "Zusammenfassung herunterladen",
+                                on_click=partial(
+                                    download_summary,
+                                    file_name=file_status[0],
+                                    user_id=user_id,
+                                ),
+                            ).props("no-caps")
+                            summary_download.disable()
+
+                            if os.path.isfile(
+                                join(
+                                    ROOT + "data/out",
+                                    user_id,
+                                    file_status[0] + ".htmlsummary",
+                                )
+                            ):
+                                summary_download.enable()
+                            if not os.path.isfile(
+                                join(
+                                    ROOT + "data/out",
+                                    user_id,
+                                    file_status[0] + ".todosummary",
+                                )
+                            ):
+                                summary_create.enable()
+                            else:
+                                ui.label("in Bearbeitung")
+                    ui.separator()
+                elif file_status[2] == -1:
+                    ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
                     ui.button(
                         "Datei entfernen",
                         on_click=partial(
@@ -687,63 +895,22 @@ async def main_page():
                         ),
                         color="red-5",
                     ).props("no-caps")
-                    any_file_ready = True
-                if SUMMARIZATION:
-                    with ui.row():
-                        summary_create = ui.button(
-                            "Zusammenfassung erstellen",
-                            on_click=partial(
-                                summarize, file_name=file_status[0], user_id=user_id
-                            ),
-                        ).props("no-caps")
-                        summary_create.disable()
-                        summary_download = ui.button(
-                            "Zusammenfassung herunterladen",
-                            on_click=partial(
-                                download_summary,
-                                file_name=file_status[0],
-                                user_id=user_id,
-                            ),
-                        ).props("no-caps")
-                        summary_download.disable()
-
-                        if os.path.isfile(
-                            join(
-                                ROOT + "data/out",
-                                user_id,
-                                file_status[0] + ".htmlsummary",
-                            )
-                        ):
-                            summary_download.enable()
-                        if not os.path.isfile(
-                            join(
-                                ROOT + "data/out",
-                                user_id,
-                                file_status[0] + ".todosummary",
-                            )
-                        ):
-                            summary_create.enable()
-                        else:
-                            ui.label("in Bearbeitung")
-                ui.separator()
-            elif file_status[2] == -1:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+                    ui.separator()
+            
+            if any_file_ready:
                 ui.button(
-                    "Datei entfernen",
-                    on_click=partial(
-                        delete_file,
-                        file_name=file_status[0],
-                        user_id=user_id,
-                        refresh_file_view=refresh_file_view,
-                    ),
-                    color="red-5",
+                    "Alle Dateien herunterladen",
+                    on_click=partial(download_all, user_id=user_id),
                 ).props("no-caps")
-                ui.separator()
-        if any_file_ready:
-            ui.button(
-                "Alle Dateien herunterladen",
-                on_click=partial(download_all, user_id=user_id),
-            ).props("no-caps")
+                
+            ui_loop_end = time.time()
+            ui_debug_log(f"Finished creating UI elements in {ui_loop_end - ui_loop_start:.4f}s")
+                
+        except Exception as outer_e:
+            ui_debug_log(f"!!! EXCEPTION in display_results for user {user_id}: {outer_e}\n{traceback.format_exc()}", True)
+        finally:
+            func_end_time = time.time()
+            ui_debug_log(f"Completed display_results in {func_end_time - func_start_time:.4f}s", True)
 
     def display_files(user_id):
         read_files(user_id)
@@ -845,6 +1012,13 @@ async def main_page():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
+    # Create debug log file at startup
+    try:
+        with open(UI_DEBUG_LOG_PATH, "w") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] UI process started\n")
+    except Exception as e:
+        print(f"Error initializing UI debug log: {str(e)}")
+    
     # Create all required directories at startup
     for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
         os.makedirs(join(ROOT, directory), exist_ok=True)
@@ -855,6 +1029,12 @@ if __name__ in {"__main__", "__mp_main__"}:
             title="TranscriboZH",
             storage_secret=STORAGE_SECRET,
             favicon=join(ROOT, "data", "logo.png"),
+            show_server_exceptions=True,  # Show exceptions in browser
+            reconnect_timeout=60,         # Increase reconnect timeout from default (15s)
+            close_timeout=30,             # Increase close timeout for cleaner disconnects
+            heartbeat=5,                  # More frequent heartbeats (5s instead of default)
+            socket_ping_interval=5,       # Keep connection alive with frequent pings
+            socket_ping_timeout=10,       # More time to respond to pings
         )
 
         # run command with ssl certificate
@@ -866,4 +1046,10 @@ if __name__ in {"__main__", "__mp_main__"}:
             port=8080,
             storage_secret=STORAGE_SECRET,
             favicon=join(ROOT, "data", "logo.png"),
+            show_server_exceptions=True,  # Show exceptions in browser
+            reconnect_timeout=60,         # Increase reconnect timeout from default (15s)
+            close_timeout=30,             # Increase close timeout for cleaner disconnects
+            heartbeat=5,                  # More frequent heartbeats (5s instead of default)
+            socket_ping_interval=5,       # Keep connection alive with frequent pings
+            socket_ping_timeout=10,       # More time to respond to pings
         )
