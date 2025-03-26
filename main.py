@@ -247,7 +247,7 @@ async def handle_added(e: events.GenericEventArguments, user_id, upload_element,
     upload_element.run_method("removeUploadedFiles")
     # Manually await read_files first to ensure data is updated
     await read_files(user_id)
-    # Then call the UI refresh
+    # Then call the UI refresh (now a synchronous function)
     refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
 
 
@@ -723,7 +723,8 @@ def inspect_docker_container(user_id):
 async def main_page():
     """Main page of the application."""
 
-    async def refresh_file_view(user_id, refresh_queue, refresh_results):
+    # Changed from async to sync since it's called in non-async contexts
+    def refresh_file_view(user_id, refresh_queue, refresh_results):
         num_errors = len(user_storage[user_id]["known_errors"])
         # Since we're in a sync callback, we need to schedule the async read_files
         # as a task and not wait for it directly
