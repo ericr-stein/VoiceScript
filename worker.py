@@ -37,7 +37,9 @@ WINDOWS = os.getenv("WINDOWS") == "True"
 BATCH_SIZE = int(os.getenv("BATCH_SIZE"))
 
 # Set up logging
-logging.basicConfig(level=logging.INFO)
+# Set to DEBUG level to match main.py for consistent logging
+logging.basicConfig(level=logging.DEBUG, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
 if WINDOWS:

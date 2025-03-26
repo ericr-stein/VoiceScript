@@ -801,167 +801,216 @@ async def main_page():
 
     @ui.refreshable
     def display_queue(user_id):
-        logger.info(f"--- Entered SIMPLIFIED display_queue for user {user_id} ---")
+        logger.info(f"--- display_queue START for user {user_id} ---")
         try:
-            # Just put a timestamped label to prove it's rendering/refreshing
-            current_time_str = datetime.datetime.now().strftime("%H:%M:%S.%f")
-            ui.label(f"Queue Display Rendered at: {current_time_str} for {user_id}")
-            ui.separator()
-            logger.info(f"--- SIMPLIFIED display_queue: Rendered label for {user_id} ---")
+            # DEFENSIVE CHECK: Ensure user_storage and file_list exist and are valid
+            if user_id not in user_storage or \
+               not isinstance(user_storage.get(user_id), dict) or \
+               "file_list" not in user_storage[user_id] or \
+               not isinstance(user_storage[user_id]["file_list"], list):
 
-            # Optional: Log the length of file_list if it exists, to confirm data availability
-            if user_id in user_storage and "file_list" in user_storage[user_id]:
-                logger.info(f"[{user_id}] File list length check in simplified view: {len(user_storage[user_id]['file_list'])}")
-            else:
-                logger.warning(f"[{user_id}] File list not found in simplified view.")
+                logger.warning(f"[{user_id}] display_queue: User storage or file_list not ready or invalid. Rendering empty.")
+                # Optionally display a loading or empty message
+                ui.label("Lade Warteschlange...")
+                return # Exit early if data structure isn't ready
+
+            file_list_snapshot = user_storage[user_id]["file_list"] # Work with a snapshot
+            logger.info(f"[{user_id}] display_queue: Processing {len(file_list_snapshot)} items in file_list.")
+
+            files_in_queue = [
+                fs for fs in file_list_snapshot
+                if isinstance(fs, list) and len(fs) > 2 and isinstance(fs[2], (int, float)) and 0 <= fs[2] < 100.0
+            ]
+            logger.info(f"[{user_id}] display_queue: Found {len(files_in_queue)} items in queue state.")
+
+            if not files_in_queue:
+                ui.label("Warteschlange ist leer.")
+                logger.info(f"[{user_id}] display_queue: Queue is empty.")
+                return # Exit if queue is empty after filtering
+
+            # Sort and display (Add try/except around sorting for robustness)
+            try:
+                 sorted_queue_items = sorted(files_in_queue, key=lambda x: (x[2], -x[4] if len(x) > 4 and isinstance(x[4], (int, float)) else 0, x[0]))
+            except Exception as sort_err:
+                 logger.error(f"[{user_id}] display_queue: Error sorting queue items: {sort_err}")
+                 sorted_queue_items = files_in_queue # Use unsorted as fallback
+
+            for file_status in sorted_queue_items:
+                logger.debug(f"[{user_id}] display_queue: Rendering item {file_status[0]}")
+
+                # Check if updates exist and apply them safely
+                current_update = user_storage[user_id].get("updates")
+                if current_update and isinstance(current_update, list) and len(current_update) > 0 and current_update[0] == file_status[0]:
+                    file_status_display = current_update
+                else:
+                    file_status_display = file_status
+
+                # Validate structure before accessing
+                if not isinstance(file_status_display, list) or len(file_status_display) < 3:
+                    logger.warning(f"[{user_id}] display_queue: Malformed file_status, skipping render: {file_status_display}")
+                    continue
+
+                # --- UI Elements ---
+                # Use try/except for individual UI elements if needed, though less likely here
+                try:
+                    status_text = file_status_display[1] if len(file_status_display) > 1 else "Status unbekannt"
+                    progress_val = file_status_display[2] if len(file_status_display) > 2 and isinstance(file_status_display[2], (int, float)) else 0.0
+
+                    ui.markdown(f"<b>{file_status_display[0].replace('_', BACKSLASHCHAR + '_')}:</b> {status_text}")
+                    ui.button(
+                        "Abbrechen",
+                        on_click=lambda f=file_status_display[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
+                        color="red-5",
+                    ).props("no-caps")
+                    ui.linear_progress(value=max(0.0, min(1.0, progress_val / 100.0)), show_value=False, size="10px").props("instant-feedback") # Clamp progress value
+                    ui.separator()
+                except Exception as element_err:
+                     logger.exception(f"[{user_id}] display_queue: Error creating UI element for {file_status_display[0]}: {element_err}")
+
+
+            logger.info(f"[{user_id}] display_queue: Finished rendering queue items.")
 
         except Exception as e:
-            logger.exception(f"[{user_id}] !!! ERROR INSIDE SIMPLIFIED display_queue !!!: {e}")
-            # Attempt to display error in UI as well
+            logger.exception(f"[{user_id}] !!! TOP LEVEL ERROR INSIDE display_queue !!!: {e}")
             try:
-                ui.label(f"Error in simplified queue display: {e}")
-            except Exception: # Avoid errors within error handling
-                pass
-        logger.info(f"--- Exiting SIMPLIFIED display_queue for user {user_id} ---")
-
-
-    # @ui.refreshable
-    # def display_queue(user_id):
-    #     logger.info(f"--- Attempting to display queue for user {user_id} ---")
-    #     try:
-    #         if user_id not in user_storage or "file_list" not in user_storage[user_id]:
-    #             logger.error(f"[{user_id}] user_storage or file_list missing for display_queue.")
-    #             ui.label("Error: User data not found for queue.")
-    #             return
-
-    #         # Filter for files actually in the queue state
-    #         files_in_queue = [
-    #             fs for fs in user_storage[user_id].get("file_list", [])  # Use .get for safety
-    #             if isinstance(fs, list) and len(fs) > 2 and 0 <= fs[2] < 100.0  # Basic validation
-    #         ]
-    #         logger.info(f"[{user_id}] Found {len(files_in_queue)} files in queue state.")
-
-    #         if not files_in_queue:
-    #             ui.label("Warteschlange ist leer.")
-    #             logger.info(f"[{user_id}] Queue is empty, displaying message.")
-    #             return  # Stop if queue is empty
-
-    #         # Sort and display
-    #         for file_status in sorted(files_in_queue, key=lambda x: (x[2], -x[4], x[0])):
-    #             logger.debug(f"[{user_id}] Displaying queue item: {file_status[0]}")
-
-    #             # Check if updates exist and apply them
-    #             current_update = user_storage[user_id].get("updates")
-    #             if current_update and isinstance(current_update, list) and len(current_update) > 0 and current_update[0] == file_status[0]:
-    #                 file_status_display = current_update
-    #             else:
-    #                 file_status_display = file_status
-
-    #             # Add more defensive checks before accessing indices
-    #             if not isinstance(file_status_display, list) or len(file_status_display) < 3:
-    #                 logger.warning(f"[{user_id}] Malformed file_status, skipping display: {file_status_display}")
-    #                 continue
-
-    #             # --- Original UI code ---
-    #             ui.markdown(f"<b>{file_status_display[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status_display[1]}")
-    #             ui.button(
-    #                 "Abbrechen",
-    #                 on_click=lambda f=file_status_display[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
-    #                 color="red-5",
-    #             ).props("no-caps")
-    #             # Ensure progress value is valid
-    #             progress_value = file_status_display[2] / 100.0 if isinstance(file_status_display[2], (int, float)) and file_status_display[2] >= 0 else 0.0
-    #             ui.linear_progress(value=progress_value, show_value=False, size="10px").props("instant-feedback")
-    #             ui.separator()
-    #             # --- End Original UI code ---
-
-    #         logger.info(f"[{user_id}] Finished rendering queue items.")
-
-    #     except Exception as e:
-    #         logger.exception(f"[{user_id}] !!! ERROR INSIDE display_queue function !!!: {e}")
-    #         ui.label(f"Fehler beim Anzeigen der Warteschlange: {e}")
+                ui.label(f"Schwerwiegender Fehler beim Anzeigen der Warteschlange: {e}")
+            except Exception: pass
+        logger.info(f"--- display_queue END for user {user_id} ---")
 
     @ui.refreshable
     def display_results(user_id):
-        any_file_ready = False
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
-            if file_status[2] >= 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
-                with ui.row():
-                    # Use lambda functions that create tasks for async functions
-                    ui.button(
-                        "Editor herunterladen (Lokal)",
-                        on_click=lambda f=file_status[0], u=user_id: asyncio.create_task(download_editor(f, u)),
-                    ).props("no-caps")
-                    ui.button(
-                        "Editor öffnen (Server)",
-                        on_click=lambda f=file_status[0], u=user_id: asyncio.create_task(open_editor(f, u)),
-                    ).props("no-caps")
-                    ui.button(
-                        "SRT-Datei",
-                        on_click=lambda f=file_status[0], u=user_id: asyncio.create_task(download_srt(f, u)),
-                    ).props("no-caps")
-                    ui.button(
-                        "Datei entfernen",
-                        on_click=lambda f=file_status[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
-                        color="red-5",
-                    ).props("no-caps")
-                    any_file_ready = True
-                if SUMMARIZATION:
-                    with ui.row():
-                        summary_create = ui.button(
-                            "Zusammenfassung erstellen",
-                            on_click=partial(
-                                lambda f, u: ui.notify("Zusammenfassungsfunktion noch nicht implementiert"),
-                                file_name=file_status[0], 
-                                user_id=user_id
-                            ),
-                        ).props("no-caps")
-                        summary_create.disable()
-                        summary_download = ui.button(
-                            "Zusammenfassung herunterladen",
-                            on_click=partial(
-                                lambda f, u: ui.notify("Zusammenfassungsfunktion noch nicht implementiert"),
-                                file_name=file_status[0],
-                                user_id=user_id,
-                            ),
-                        ).props("no-caps")
-                        summary_download.disable()
+        logger.info(f"--- display_results START for user {user_id} ---")
+        try:
+            # DEFENSIVE CHECK: Ensure user_storage and file_list exist and are valid
+            if user_id not in user_storage or \
+               not isinstance(user_storage.get(user_id), dict) or \
+               "file_list" not in user_storage[user_id] or \
+               not isinstance(user_storage[user_id]["file_list"], list):
 
-                        if os.path.isfile(
-                            join(
-                                ROOT + "data/out",
-                                user_id,
-                                file_status[0] + ".htmlsummary",
-                            )
-                        ):
-                            summary_download.enable()
-                        if not os.path.isfile(
-                            join(
-                                ROOT + "data/out",
-                                user_id,
-                                file_status[0] + ".todosummary",
-                            )
-                        ):
-                            summary_create.enable()
-                        else:
-                            ui.label("in Bearbeitung")
-                ui.separator()
-            elif file_status[2] == -1:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
-                ui.button(
-                    "Datei entfernen",
-                    on_click=lambda f=file_status[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
-                    color="red-5",
-                ).props("no-caps")
-                ui.separator()
-        if any_file_ready:
-            ui.button(
-                "Alle Dateien herunterladen",
-                on_click=lambda u=user_id: asyncio.create_task(download_all(u)),
-            ).props("no-caps")
+                logger.warning(f"[{user_id}] display_results: User storage or file_list not ready or invalid. Rendering empty.")
+                ui.label("Lade Ergebnisse...")
+                return
+
+            file_list_snapshot = user_storage[user_id]["file_list"]
+            logger.info(f"[{user_id}] display_results: Processing {len(file_list_snapshot)} items.")
+
+            any_file_ready = False
+            # Add try/except around sorting
+            try:
+                sorted_items = sorted(file_list_snapshot, key=lambda x: (
+                    x[2] if len(x) > 2 and isinstance(x[2], (int, float)) else -2,  # put errors/invalid items first
+                    -x[4] if len(x) > 4 and isinstance(x[4], (int, float)) else 0,
+                    x[0] if len(x) > 0 else ""
+                ))
+            except Exception as sort_err:
+                logger.error(f"[{user_id}] display_results: Error sorting items: {sort_err}")
+                sorted_items = file_list_snapshot  # Fallback
+
+            for file_status in sorted_items:
+                # Add validation
+                if not isinstance(file_status, list) or len(file_status) < 3:
+                    logger.warning(f"[{user_id}] display_results: Malformed file_status, skipping: {file_status}")
+                    continue
+
+                # Check for updates safely
+                current_update = user_storage[user_id].get("updates")
+                if current_update and isinstance(current_update, list) and len(current_update) > 0 and current_update[0] == file_status[0]:
+                    file_status_display = current_update
+                else:
+                    file_status_display = file_status
+
+                # Extract status code safely
+                status_code = file_status_display[2] if len(file_status_display) > 2 and isinstance(file_status_display[2], (int, float)) else -2
+
+                if status_code >= 100.0:
+                    try:
+                        any_file_ready = True
+                        ui.markdown(f"<b>{file_status_display[0].replace('_', BACKSLASHCHAR + '_')}</b>")
+                        with ui.row():
+                            ui.button(
+                                "Editor herunterladen (Lokal)",
+                                on_click=lambda f=file_status_display[0], u=user_id: asyncio.create_task(download_editor(f, u)),
+                            ).props("no-caps")
+                            ui.button(
+                                "Editor öffnen (Server)",
+                                on_click=lambda f=file_status_display[0], u=user_id: asyncio.create_task(open_editor(f, u)),
+                            ).props("no-caps")
+                            ui.button(
+                                "SRT-Datei",
+                                on_click=lambda f=file_status_display[0], u=user_id: asyncio.create_task(download_srt(f, u)),
+                            ).props("no-caps")
+                            ui.button(
+                                "Datei entfernen",
+                                on_click=lambda f=file_status_display[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
+                                color="red-5",
+                            ).props("no-caps")
+                        
+                        if SUMMARIZATION:
+                            with ui.row():
+                                summary_create = ui.button(
+                                    "Zusammenfassung erstellen",
+                                    on_click=partial(
+                                        lambda f, u: ui.notify("Zusammenfassungsfunktion noch nicht implementiert"),
+                                        file_name=file_status_display[0], 
+                                        user_id=user_id
+                                    ),
+                                ).props("no-caps")
+                                summary_create.disable()
+                                summary_download = ui.button(
+                                    "Zusammenfassung herunterladen",
+                                    on_click=partial(
+                                        lambda f, u: ui.notify("Zusammenfassungsfunktion noch nicht implementiert"),
+                                        file_name=file_status_display[0],
+                                        user_id=user_id,
+                                    ),
+                                ).props("no-caps")
+                                summary_download.disable()
+
+                                # Safer path concatenation
+                                summary_path = join(ROOT, "data", "out", user_id, file_status_display[0] + ".htmlsummary")
+                                todo_path = join(ROOT, "data", "out", user_id, file_status_display[0] + ".todosummary")
+                                
+                                if os.path.isfile(summary_path):
+                                    summary_download.enable()
+                                if not os.path.isfile(todo_path):
+                                    summary_create.enable()
+                                else:
+                                    ui.label("in Bearbeitung")
+                        ui.separator()
+                    except Exception as el_err:
+                        logger.exception(f"[{user_id}] display_results: Error rendering completed item {file_status_display[0]}: {el_err}")
+
+                elif status_code == -1:
+                    try:
+                        status_text = file_status_display[1] if len(file_status_display) > 1 else "Transkription fehlgeschlagen"
+                        ui.markdown(f"<b>{file_status_display[0].replace('_', BACKSLASHCHAR + '_')}:</b> {status_text}")
+                        ui.button(
+                            "Datei entfernen",
+                            on_click=lambda f=file_status_display[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
+                            color="red-5",
+                        ).props("no-caps")
+                        ui.separator()
+                    except Exception as el_err:
+                        logger.exception(f"[{user_id}] display_results: Error rendering failed item {file_status_display[0]}: {el_err}")
+
+            if any_file_ready:
+                try:
+                    ui.button(
+                        "Alle Dateien herunterladen",
+                        on_click=lambda u=user_id: asyncio.create_task(download_all(u)),
+                    ).props("no-caps")
+                except Exception as btn_err:
+                    logger.error(f"[{user_id}] display_results: Error creating download all button: {btn_err}")
+
+            logger.info(f"[{user_id}] display_results: Finished rendering results items.")
+
+        except Exception as e:
+            logger.exception(f"[{user_id}] !!! TOP LEVEL ERROR INSIDE display_results !!!: {e}")
+            try:
+                ui.label(f"Schwerwiegender Fehler beim Anzeigen der Ergebnisse: {e}")
+            except Exception:
+                pass
+        logger.info(f"--- display_results END for user {user_id} ---")
 
     async def display_files(user_id):
         logger.info(f"[{user_id}] Starting display_files function")
