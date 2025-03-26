@@ -374,14 +374,9 @@ async def download_all(user_id):
         out_dir = join(ROOT, "data", "out", user_id)
         os.makedirs(out_dir, exist_ok=True)
         
-        zip_file_path = join(out_dir, "transcribed_files.zip")
-        if os.path.exists(zip_file_path):
-            try:
-                os.remove(zip_file_path)  # Remove any existing zip file
-                print(f"Removed existing zip file: {zip_file_path}")
-            except Exception as e:
-                print(f"Error removing existing zip file: {str(e)}")
-                ui.notify(f"Could not remove existing zip file: {str(e)}", color="warning")
+        # Create a unique filename with timestamp to prevent conflicts
+        timestamp = int(time.time())
+        zip_file_path = join(out_dir, f"transcribed_files_{timestamp}.zip")
         
         # Create a new zip file
         with zipfile.ZipFile(zip_file_path, "w", allowZip64=True) as myzip:
@@ -434,15 +429,8 @@ async def download_all(user_id):
         else:
             ui.notify(f"Download started: transcribed_files.zip with {count} files", color="positive")
         
-        # Clean up the temp file after a delay to ensure download completes
-        # We'll add a small delay to ensure the file is fully downloaded before cleaning up
-        await ui.run_javascript("setTimeout(() => {}, 5000)")  # 5 second delay
-        if os.path.exists(zip_file_path):
-            try:
-                os.remove(zip_file_path)
-                print(f"Removed temporary zip file after download: {zip_file_path}")
-            except Exception as e:
-                print(f"Error removing temporary zip file: {str(e)}")
+        # No cleanup - file will remain on server for download
+        # This matches the pattern used by other download functions in this application
             
     except Exception as e:
         # Handle any unexpected errors
