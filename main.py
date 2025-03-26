@@ -4,11 +4,18 @@ import shutil
 import zipfile
 import datetime
 import base64
+import asyncio
+import logging
 from os import listdir
 from os.path import isfile, join
 from functools import partial
 from dotenv import load_dotenv
 from nicegui import ui, events, app
+
+# Configure logging
+logging.basicConfig(level=logging.INFO, 
+                   format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
+logger = logging.getLogger(__name__)
 
 from data.const import LANGUAGES, INVERTED_LANGUAGES
 from src.util import time_estimate
@@ -36,7 +43,7 @@ BACKSLASHCHAR = "\\"
 user_storage = {}
 
 
-def read_files(user_id):
+async def read_files(user_id):
     """Read in all files of the user and set the file status if known."""
     user_storage[user_id]["file_list"] = []
     in_path = join(ROOT, "data", "in", user_id)
@@ -44,60 +51,93 @@ def read_files(user_id):
     error_path = join(ROOT, "data", "error", user_id)
 
     if os.path.exists(in_path):
+        potential_files = []
         for f in listdir(in_path):
+            # Basic filtering first
             if isfile(join(in_path, f)) and f != "hotwords.txt" and f != "language.txt" and not f.endswith(".processing"):
-                file_status = [
-                    f,
-                    "Datei in Warteschlange. Geschätzte Wartezeit: ",
-                    0.0,
-                    0,
-                    os.path.getmtime(join(in_path, f)),
-                ]
-                if isfile(join(out_path, f + ".html")):
-                    file_status[1] = "Datei transkribiert"
-                    file_status[2] = 100.0
-                    file_status[3] = 0
-                else:
-                    estimated_time, _ = time_estimate(join(in_path, f), ONLINE)
-                    if estimated_time == -1:
-                        estimated_time = 0
-                    file_status[3] = estimated_time
+                potential_files.append(f)
 
-                user_storage[user_id]["file_list"].append(file_status)
+        # --- Prepare file status and estimate duration asynchronously ---
+        estimate_tasks = {}
+        for f in potential_files:
+            file_status = [
+                f,
+                "Datei in Warteschlange...", # Default status
+                0.0, # Progress
+                0,   # Estimated time (will be filled)
+                os.path.getmtime(join(in_path, f)), # Modification time
+                False # Flag: duration calculated
+            ]
+            user_storage[user_id]["file_list"].append(file_status)
 
+            if isfile(join(out_path, f + ".html")):
+                file_status[1] = "Datei transkribiert"
+                file_status[2] = 100.0
+                file_status[5] = True # Mark as calculated (no estimate needed)
+            else:
+                # Create an async task to estimate time
+                task = asyncio.create_task(update_estimate_for_file(in_path, f, file_status, ONLINE))
+                estimate_tasks[f] = task
+
+        # --- Wait for all estimates to complete ---
+        if estimate_tasks:
+            await asyncio.gather(*estimate_tasks.values())
+
+        # --- Now calculate queue positions and wait times using the estimates ---
         files_in_queue = []
-        for u in user_storage:
-            for f in user_storage[u].get("file_list", []):
-                if (
-                    "updates" in user_storage[u]
-                    and len(user_storage[u]["updates"]) > 0
-                    and user_storage[u]["updates"][0] == f[0]
-                ):
-                    f = user_storage[u]["updates"]
-                if f[2] < 100.0:
-                    files_in_queue.append(f)
+        # Gather queue info from all files in all user storage that are in queue
+        all_user_files = []
+        for u_id in user_storage:
+            all_user_files.extend(user_storage[u_id].get("file_list", []))
+
+        for file_status in all_user_files:
+            # Update status if currently processing (from listen updates)
+            if "updates" in user_storage.get(u_id, {}) and len(user_storage[u_id]["updates"]) > 0 and user_storage[u_id]["updates"][0] == file_status[0]:
+                file_status = user_storage[u_id]["updates"]
+
+            if file_status[2] < 100.0:
+                # Ensure estimate is populated (should be by now, add fallback if needed)
+                if len(file_status) < 4 or file_status[3] <= 0:
+                    # Could happen if estimate failed or hasn't run
+                    if len(file_status) <= 3: 
+                        file_status.append(60) # Add default estimate
+                    else:
+                        file_status[3] = 60 # Set default estimate
+                    logger.warning(f"Using default estimate for {file_status[0]}")
+                files_in_queue.append(file_status)
 
         # Sort the queue by modification time (older files first)
         sorted_queue = sorted(files_in_queue, key=lambda x: x[4])
+        queue_size = len(sorted_queue)
 
+        # Calculate wait times for the current user's files
         for file_status in user_storage[user_id]["file_list"]:
             if file_status[2] < 100.0:
-                # Get position in queue (1-based)
-                queue_position = next((i + 1 for i, f in enumerate(sorted_queue) if f[0] == file_status[0]), 0)
-                
-                # If currently processing, show as position 1
+                # Find the file in the global sorted queue
+                try:
+                    queue_position = next((i + 1 for i, f in enumerate(sorted_queue) if f[0] == file_status[0]), 0)
+                except Exception:
+                    queue_position = 0 # Should not happen if logic is correct
+
+                # If currently processing by this user, show as position 1
                 if "updates" in user_storage[user_id] and len(user_storage[user_id]["updates"]) > 0 and user_storage[user_id]["updates"][0] == file_status[0]:
                     queue_position = 1
-                
-                # Get total queue size
-                queue_size = len(sorted_queue)
-                
-                # Calculate estimated wait time
-                estimated_wait_time = sum(f[3] for f in files_in_queue if f[4] < file_status[4])
+                    # Ensure queue size is at least 1 if processing
+                    if queue_size == 0 and queue_position == 1: 
+                        queue_size = 1
+
+                # Calculate estimated wait time based on files *before* it in the global queue
+                estimated_wait_time = sum(f[3] for f in sorted_queue if f[4] < file_status[4])
                 wait_time_str = str(datetime.timedelta(seconds=round(estimated_wait_time + file_status[3])))
-                
+
                 # Update status message with position
-                file_status[1] = f"Position {queue_position}/{queue_size} in der Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
+                if queue_position > 0:
+                    file_status[1] = f"Position {queue_position}/{queue_size} in der Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
+                else:
+                    # File might be finished or in error state, status set elsewhere
+                    if file_status[2] < 100 and file_status[2] >= 0: # Still queued but position unknown
+                        logger.warning(f"Could not determine queue position for {file_status[0]}")
+                        file_status[1] = f"In Warteschlange (Position unbekannt). Geschätzte Wartezeit: {wait_time_str}"
 
     if os.path.exists(error_path):
         for f in listdir(error_path):
@@ -115,6 +155,28 @@ def read_files(user_id):
                 user_storage[user_id]["file_list"].append(file_status)
 
     user_storage[user_id]["file_list"].sort()
+
+
+async def update_estimate_for_file(in_path, filename, file_status, online):
+    """Asynchronously estimates time and updates the file_status list directly."""
+    try:
+        # Ensure file_status has enough elements, add placeholders if needed
+        while len(file_status) < 6:
+            file_status.append(None)
+
+        estimated_time, run_time = await time_estimate(join(in_path, filename), online)
+        if estimated_time == -1:
+            estimated_time = 60  # Default estimate on error
+            logger.warning(f"time_estimate failed for {filename}, using default 60s")
+        file_status[3] = estimated_time
+        file_status[5] = True  # Mark duration as calculated
+    except Exception as e:
+        logger.exception(f"Error in update_estimate_for_file for {filename}: {e}")
+        # Ensure placeholders exist and set defaults
+        while len(file_status) < 6:
+            file_status.append(None)
+        file_status[3] = 60  # Default estimate on error
+        file_status[5] = True  # Mark as calculated (even if defaulted)
 
 
 async def handle_upload(e: events.UploadEventArguments, user_id):
@@ -428,9 +490,12 @@ def delete_file(file_name, user_id, refresh_file_view):
     ui.notify(f"Datei '{file_name}' wurde entfernt")
 
 
-def listen(user_id, refresh_file_view):
+async def listen(user_id, refresh_file_view):
     """Periodically check if a file is being transcribed and calculate its estimated progress."""
     worker_user_dir = join(ROOT, "data", "worker", user_id)
+    currently_processing_file = None
+    refreshed_queue = False
+    refreshed_results = False
     
     if os.path.exists(worker_user_dir):
         worker_files = listdir(worker_user_dir)
@@ -439,57 +504,80 @@ def listen(user_id, refresh_file_view):
             file_path = join(worker_user_dir, f)
             
             if isfile(file_path):
-                parts = f.split("_")
-                if len(parts) < 3:
-                    continue
+                try:
+                    parts = f.split("_")
+                    if len(parts) < 3:
+                        continue
+                        
+                    estimated_time = float(parts[0])
+                    start = float(parts[1])
+                    file_name = "_".join(parts[2:])
+                    currently_processing_file = file_name  # Mark this file as being processed
                     
-                estimated_time = float(parts[0])
-                start = float(parts[1])
-                file_name = "_".join(parts[2:])
-                progress = min(0.975, (time.time() - start) / estimated_time)
-                estimated_time_left = round(max(1, estimated_time - (time.time() - start)))
+                    progress = min(0.975, (time.time() - start) / max(1, estimated_time))  # Avoid division by zero
+                    estimated_time_left = round(max(1, estimated_time - (time.time() - start)))
 
-                in_file = join(ROOT, "data", "in", user_id, file_name)
-                if os.path.exists(in_file):
-                    # Show different message for post-processing phase vs normal transcription
-                    if progress > 0.95:
-                        status_message = f"Position 1/1 in der Warteschlange. Datei wird nachbearbeitet... (SRT-Datei wird erzeugt, Editor wird erstellt)"
+                    in_file = join(ROOT, "data", "in", user_id, file_name)
+                    if os.path.exists(in_file):
+                        # Show different message for post-processing phase vs normal transcription
+                        if progress > 0.95:
+                            status_message = f"Position 1/1 in der Warteschlange. Datei wird nachbearbeitet... (SRT-Datei wird erzeugt, Editor wird erstellt)"
+                        else:
+                            wait_time_delta = datetime.timedelta(seconds=estimated_time_left)
+                            status_message = f"Position 1/1 in der Warteschlange. Datei wird transkribiert. Geschätzte Bearbeitungszeit: {wait_time_delta}"
+                        
+                        user_storage[user_id]["updates"] = [
+                            file_name,
+                            status_message,
+                            progress * 100,
+                            estimated_time_left,
+                            os.path.getmtime(in_file),
+                        ]
+                        
+                        # Persist the updates to the file_list
+                        updated = False
+                        for i, file_status in enumerate(user_storage[user_id]["file_list"]):
+                            if file_status[0] == file_name:
+                                # Only update if progress is newer or file status changes significantly
+                                if file_status[2] != progress * 100 or file_status[1] != status_message:
+                                    user_storage[user_id]["file_list"][i] = user_storage[user_id]["updates"]
+                                    updated = True
+                                    refreshed_queue = True  # Mark queue for refresh
+                                break
                     else:
-                        status_message = f"Position 1/1 in der Warteschlange. Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}"
-                    
-                    user_storage[user_id]["updates"] = [
-                        file_name,
-                        status_message,
-                        progress * 100,
-                        estimated_time_left,
-                        os.path.getmtime(in_file),
-                    ]
-                    
-                    # Persist the updates to the file_list
-                    updated = False
-                    for i, file_status in enumerate(user_storage[user_id]["file_list"]):
-                        if file_status[0] == file_name:
-                            user_storage[user_id]["file_list"][i] = user_storage[user_id]["updates"]
-                            updated = True
-                            break
-                else:
-                    os.remove(file_path)
-                    
-                refresh_file_view(
-                    user_id=user_id,
-                    refresh_queue=True,
-                    refresh_results=(user_storage[user_id].get("file_in_progress") != file_name),
-                )
-                user_storage[user_id]["file_in_progress"] = file_name
-                return
+                        # File no longer exists in input directory, remove worker file
+                        logger.debug(f"Input file {file_name} no longer exists, removing worker file")
+                        try:
+                            os.remove(file_path)
+                        except OSError as e:
+                            logger.warning(f"Could not remove worker file {file_path}: {e}")
+                except (ValueError, IndexError, FileNotFoundError, OSError) as e:
+                    logger.warning(f"Could not process worker file {f}: {e}")
+                    try:
+                        os.remove(file_path)  # Clean up potentially corrupt worker file
+                    except OSError:
+                        pass
 
-        # No files being processed
-        if user_storage[user_id].get("updates"):
-            user_storage[user_id]["updates"] = []
-            user_storage[user_id]["file_in_progress"] = None
-            refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
-        else:
-            refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
+    # If no worker files were found OR the previously processing file is no longer processing
+    if user_storage[user_id].get("file_in_progress") and user_storage[user_id]["file_in_progress"] != currently_processing_file:
+        logger.debug(f"File {user_storage[user_id]['file_in_progress']} finished processing or worker file gone.")
+        user_storage[user_id]["updates"] = []
+        user_storage[user_id]["file_in_progress"] = None
+        # Need to refresh lists as file status has changed (queued -> done/error)
+        refreshed_queue = True
+        refreshed_results = True
+        # Trigger read_files to update queue positions and results list fully
+        await read_files(user_id)  # <--- Call async read_files here
+        
+    elif currently_processing_file and user_storage[user_id].get("file_in_progress") != currently_processing_file:
+        # A new file started processing
+        user_storage[user_id]["file_in_progress"] = currently_processing_file
+        refreshed_queue = True
+        
+    # If state changed requiring refresh, call the refresh function
+    if refreshed_queue or refreshed_results:
+        logger.debug(f"Refreshing UI: Queue={refreshed_queue}, Results={refreshed_results}")
+        refresh_file_view(user_id=user_id, refresh_queue=refreshed_queue, refresh_results=refreshed_results)
 
 
 def update_hotwords(user_id):
@@ -628,9 +716,11 @@ def inspect_docker_container(user_id):
 async def main_page():
     """Main page of the application."""
 
-    def refresh_file_view(user_id, refresh_queue, refresh_results):
+    async def refresh_file_view(user_id, refresh_queue, refresh_results):
         num_errors = len(user_storage[user_id]["known_errors"])
-        read_files(user_id)
+        # Since we're in a sync callback, we need to schedule the async read_files
+        # as a task and not wait for it directly
+        asyncio.create_task(read_files(user_id))
         if refresh_queue:
             display_queue.refresh(user_id=user_id)
         if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
@@ -693,14 +783,16 @@ async def main_page():
                         summary_create = ui.button(
                             "Zusammenfassung erstellen",
                             on_click=partial(
-                                summarize, file_name=file_status[0], user_id=user_id
+                                lambda f, u: ui.notify("Zusammenfassungsfunktion noch nicht implementiert"),
+                                file_name=file_status[0], 
+                                user_id=user_id
                             ),
                         ).props("no-caps")
                         summary_create.disable()
                         summary_download = ui.button(
                             "Zusammenfassung herunterladen",
                             on_click=partial(
-                                download_summary,
+                                lambda f, u: ui.notify("Zusammenfassungsfunktion noch nicht implementiert"),
                                 file_name=file_status[0],
                                 user_id=user_id,
                             ),
@@ -745,8 +837,8 @@ async def main_page():
                 on_click=partial(download_all, user_id=user_id),
             ).props("no-caps")
 
-    def display_files(user_id):
-        read_files(user_id)
+    async def display_files(user_id):
+        await read_files(user_id)  # We can await this directly here
         with ui.card().classes("border p-4").style("width: min(60vw, 700px);"):
             display_queue(user_id=user_id)
             display_results(user_id=user_id)
@@ -769,7 +861,7 @@ async def main_page():
     if os.path.exists(in_user_tmp_dir):
         shutil.rmtree(in_user_tmp_dir)
 
-    read_files(user_id)
+    await read_files(user_id)  # Properly await the async function
 
     with ui.column():
         with ui.header(elevated=True).style("background-color: #0070b4;").props("fit=scale-down").classes("q-pa-xs-xs"):
@@ -807,8 +899,8 @@ async def main_page():
                 
                 # Quick timer for checking file progress
                 ui.timer(
-                    1,  # Check frequently for better responsiveness
-                    partial(listen, user_id=user_id, refresh_file_view=refresh_file_view),
+                    5,  # Less frequent timer to reduce overhead
+                    lambda: asyncio.create_task(listen(user_id=user_id, refresh_file_view=refresh_file_view)),
                 )
                 user_storage[user_id]["language"] = ui.select(
                     [LANGUAGES[key] for key in LANGUAGES],

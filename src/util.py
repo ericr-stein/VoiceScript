@@ -1,7 +1,10 @@
 from pydub import AudioSegment
 import subprocess
+import asyncio
 import os
+import logging
 
+logger = logging.getLogger(__name__)
 DEVICE = os.getenv("DEVICE")
 
 
@@ -31,40 +34,64 @@ def filter_nondominant_voice(segments, index):
     return segments[index]
 
 
-def get_length(filename):
-    result = subprocess.run(
-        [
-            "ffprobe",
-            "-v",
-            "error",
-            "-show_entries",
-            "format=duration",
-            "-of",
-            "default=noprint_wrappers=1:nokey=1",
-            filename,
-        ],
-        stdout=subprocess.PIPE,
-        stderr=subprocess.STDOUT,
+async def get_length(filename):
+    """Asynchronously get the duration of a media file using ffprobe."""
+    command = [
+        "ffprobe",
+        "-v", "error",
+        "-show_entries", "format=duration",
+        "-of", "default=noprint_wrappers=1:nokey=1",
+        filename,
+    ]
+    logger.debug(f"Running async ffprobe for: {filename}")
+    process = await asyncio.create_subprocess_exec(
+        *command,
+        stdout=asyncio.subprocess.PIPE,
+        stderr=asyncio.subprocess.PIPE
     )
-    return float(result.stdout)
+    stdout, stderr = await process.communicate()
+
+    if process.returncode != 0:
+        error_message = stderr.decode().strip()
+        logger.error(f"ffprobe error for {filename}: {error_message}")
+        return None  # Indicate failure
+
+    try:
+        duration = float(stdout.decode().strip())
+        logger.debug(f"ffprobe success for {filename}, duration: {duration}")
+        return duration
+    except ValueError:
+        logger.error(f"Could not parse ffprobe duration output for {filename}: {stdout.decode()}")
+        return None  # Indicate failure
 
 
-def time_estimate(filename, online=True):
+async def time_estimate(filename, online=True):
+    """Asynchronously estimate processing time based on file duration."""
     try:
         # For now, we don't predict the wait time for zipped files in the queue.
-        if filename[-4:] == ".zip":
+        if filename.lower().endswith(".zip"):
             return 1, 1
-        run_time = get_length(filename)
+
+        run_time = await get_length(filename)  # Await the async call
+
+        if run_time is None:  # Handle ffprobe failure
+            logger.warning(f"Failed to get length for {filename}, using default estimate.")
+            # Return a default estimate or error indication
+            return 60, -1  # e.g., 60s estimate, -1 runtime indicates error
+
+        # Your existing estimation logic
         if online:
             if DEVICE == "mps":
-                return run_time / 5, run_time
+                estimate = run_time / 5
             else:
-                return run_time / 10, run_time
+                estimate = run_time / 10
         else:
             if DEVICE == "mps":
-                return run_time / 3, run_time
+                estimate = run_time / 3
             else:
-                return run_time / 6, run_time
+                estimate = run_time / 6
+        return estimate, run_time
+
     except Exception as e:
-        print(e)
-        return -1, -1
+        logger.exception(f"Error during time estimation for {filename}: {e}")
+        return -1, -1  # Indicate error
