@@ -46,6 +46,7 @@ user_storage = {}
 
 async def read_files(user_id):
     """Read in all files of the user and set the file status if known."""
+    logger.info(f"[{user_id}] Starting read_files function")
     user_storage[user_id]["file_list"] = []
     in_path = join(ROOT, "data", "in", user_id)
     out_path = join(ROOT, "data", "out", user_id)
@@ -58,6 +59,8 @@ async def read_files(user_id):
             if isfile(join(in_path, f)) and f != "hotwords.txt" and f != "language.txt" and not f.endswith(".processing"):
                 potential_files.append(f)
 
+        logger.info(f"[{user_id}] Found {len(potential_files)} potential files to process")
+        
         # --- Prepare file status and estimate duration asynchronously ---
         estimate_tasks = {}
         for f in potential_files:
@@ -82,64 +85,116 @@ async def read_files(user_id):
 
         # --- Wait for all estimates to complete ---
         if estimate_tasks:
-            await asyncio.gather(*estimate_tasks.values())
+            try:
+                logger.info(f"[{user_id}] Waiting for {len(estimate_tasks)} estimates...")
+                results = await asyncio.gather(*estimate_tasks.values(), return_exceptions=True)
+                logger.info(f"[{user_id}] Estimates gathered successfully (or with exceptions).")
+                # Log any exceptions from gather
+                exceptions_found = False
+                for i, result in enumerate(results):
+                    if isinstance(result, Exception):
+                        filename = list(estimate_tasks.keys())[i]
+                        logger.error(f"[{user_id}] Error gathering estimate for {filename}: {result}")
+                        exceptions_found = True
+                if exceptions_found:
+                    logger.warning(f"[{user_id}] There were errors during estimate gathering.")
+
+            except Exception as gather_err:
+                logger.exception(f"[{user_id}] Major error in asyncio.gather for estimates: {gather_err}")
+                # Potentially return or raise here if gather itself fails catastrophically
+                return # Exit read_files if gather fails
 
         # --- Now calculate queue positions and wait times using the estimates ---
+        logger.info(f"[{user_id}] Preparing file queue info...")
         files_in_queue = []
-        # Gather queue info from all files in all user storage that are in queue
         all_user_files = []
-        for u_id in user_storage:
-            all_user_files.extend(user_storage[u_id].get("file_list", []))
+        try: # Add try/except around accessing user_storage potentially from other users
+            for u_id in user_storage:
+                # Add safety check for file_list existence
+                if "file_list" in user_storage[u_id]:
+                    all_user_files.extend(user_storage[u_id]["file_list"])
+                else:
+                    logger.warning(f"[{user_id}] No 'file_list' found for user {u_id} during queue calculation.")
+        except Exception as e:
+            logger.exception(f"[{user_id}] Error accessing user_storage during queue calculation: {e}")
+
+        logger.info(f"[{user_id}] Total files across users for queue calc: {len(all_user_files)}")
 
         for file_status in all_user_files:
+            # Add validation for file_status structure
+            if not isinstance(file_status, list) or len(file_status) < 3:
+                logger.warning(f"[{user_id}] Skipping malformed file_status in queue calc: {file_status}")
+                continue
+
             # Update status if currently processing (from listen updates)
-            if "updates" in user_storage.get(u_id, {}) and len(user_storage[u_id]["updates"]) > 0 and user_storage[u_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[u_id]["updates"]
+            # Make this safer with .get()
+            user_updates = user_storage.get(u_id, {}).get("updates", [])
+            if user_updates and len(user_updates) > 0 and user_updates[0] == file_status[0]:
+                file_status = user_updates # Careful: this modifies the loop variable, maybe assign to new var?
 
             if file_status[2] < 100.0:
-                # Ensure estimate is populated (should be by now, add fallback if needed)
-                if len(file_status) < 4 or file_status[3] <= 0:
-                    # Could happen if estimate failed or hasn't run
-                    if len(file_status) <= 3: 
-                        file_status.append(60) # Add default estimate
-                    else:
-                        file_status[3] = 60 # Set default estimate
-                    logger.warning(f"Using default estimate for {file_status[0]}")
+                # Ensure estimate is populated
+                if len(file_status) < 4 or not isinstance(file_status[3], (int, float)) or file_status[3] <= 0:
+                    if len(file_status) <= 3: file_status.append(60) # Add default estimate
+                    else: file_status[3] = 60 # Set default estimate
+                    logger.warning(f"[{user_id}] Using default estimate (60s) for {file_status[0]} during queue calc.")
                 files_in_queue.append(file_status)
 
-        # Sort the queue by modification time (older files first)
-        sorted_queue = sorted(files_in_queue, key=lambda x: x[4])
+        logger.info(f"[{user_id}] Sorting {len(files_in_queue)} files for queue timing...")
+        try:
+            # Sort the queue by modification time
+            sorted_queue = sorted(files_in_queue, key=lambda x: x[4] if len(x) > 4 and isinstance(x[4], (int, float)) else 0) # Safer key access
+        except Exception as sort_err:
+            logger.exception(f"[{user_id}] Error sorting file queue: {sort_err}")
+            sorted_queue = files_in_queue # Fallback to unsorted if error
+
         queue_size = len(sorted_queue)
+        logger.info(f"[{user_id}] Calculated global queue size: {queue_size}")
 
         # Calculate wait times for the current user's files
-        for file_status in user_storage[user_id]["file_list"]:
-            if file_status[2] < 100.0:
-                # Find the file in the global sorted queue
-                try:
-                    queue_position = next((i + 1 for i, f in enumerate(sorted_queue) if f[0] == file_status[0]), 0)
-                except Exception:
-                    queue_position = 0 # Should not happen if logic is correct
+        logger.info(f"[{user_id}] Updating status for user's file_list...")
+        try: # Add try/except around the final loop
+            if user_id in user_storage and "file_list" in user_storage[user_id]: # Check if user_id still valid
+                for file_status in user_storage[user_id]["file_list"]:
+                    # Add validation
+                    if not isinstance(file_status, list) or len(file_status) < 3: continue
 
-                # If currently processing by this user, show as position 1
-                if "updates" in user_storage[user_id] and len(user_storage[user_id]["updates"]) > 0 and user_storage[user_id]["updates"][0] == file_status[0]:
-                    queue_position = 1
-                    # Ensure queue size is at least 1 if processing
-                    if queue_size == 0 and queue_position == 1: 
-                        queue_size = 1
+                    if file_status[2] < 100.0:
+                        try: # Inner try for queue position logic
+                            # Find the file in the global sorted queue
+                            queue_position = next((i + 1 for i, f in enumerate(sorted_queue) if isinstance(f, list) and len(f)>0 and f[0] == file_status[0]), 0) # Safer check
 
-                # Calculate estimated wait time based on files *before* it in the global queue
-                estimated_wait_time = sum(f[3] for f in sorted_queue if f[4] < file_status[4])
-                wait_time_str = str(datetime.timedelta(seconds=round(estimated_wait_time + file_status[3])))
+                            # If currently processing by this user, show as position 1
+                            user_updates = user_storage[user_id].get("updates", [])
+                            if user_updates and len(user_updates) > 0 and user_updates[0] == file_status[0]:
+                                queue_position = 1
+                                if queue_size == 0 and queue_position == 1: queue_size = 1
 
-                # Update status message with position
-                if queue_position > 0:
-                    file_status[1] = f"Position {queue_position}/{queue_size} in der Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
-                else:
-                    # File might be finished or in error state, status set elsewhere
-                    if file_status[2] < 100 and file_status[2] >= 0: # Still queued but position unknown
-                        logger.warning(f"Could not determine queue position for {file_status[0]}")
-                        file_status[1] = f"In Warteschlange (Position unbekannt). Geschätzte Wartezeit: {wait_time_str}"
+                            # Calculate estimated wait time
+                            # Safer calculation: check types and length before accessing index 4
+                            estimated_wait_time = sum(f[3] for f in sorted_queue if isinstance(f, list) and len(f) > 4 and isinstance(f[4], (int, float)) and f[4] < (file_status[4] if len(file_status) > 4 and isinstance(file_status[4], (int, float)) else 0))
+                            # Ensure file_status[3] exists and is numeric before adding
+                            current_estimate = file_status[3] if len(file_status) > 3 and isinstance(file_status[3], (int, float)) else 60
+                            wait_time_str = str(datetime.timedelta(seconds=round(estimated_wait_time + current_estimate)))
 
+                            # Update status message
+                            if queue_position > 0:
+                                file_status[1] = f"Position {queue_position}/{queue_size} in der Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
+                            elif file_status[2] < 100 and file_status[2] >= 0: # Still queued but position unknown
+                                logger.warning(f"[{user_id}] Could not determine queue position for {file_status[0]}")
+                                file_status[1] = f"In Warteschlange (Position unbekannt). Geschätzte Wartezeit: {wait_time_str}"
+
+                        except Exception as pos_err:
+                            logger.exception(f"[{user_id}] Error calculating queue position/wait time for {file_status[0]}: {pos_err}")
+                            file_status[1] = "Fehler bei Warteschlangenberechnung" # Update status on error
+
+            else:
+                logger.error(f"[{user_id}] User storage disappeared before final status update in read_files.")
+
+        except Exception as final_loop_err:
+            logger.exception(f"[{user_id}] Error in final status update loop of read_files: {final_loop_err}")
+
+    # --- Error files handling ---
     if os.path.exists(error_path):
         for f in listdir(error_path):
             if isfile(join(error_path, f)) and not f.endswith(".txt"):
@@ -155,7 +210,16 @@ async def read_files(user_id):
                     user_storage[user_id]["known_errors"].add(f)
                 user_storage[user_id]["file_list"].append(file_status)
 
-    user_storage[user_id]["file_list"].sort()
+    logger.info(f"[{user_id}] Sorting final file_list...")
+    try:
+        if user_id in user_storage and "file_list" in user_storage[user_id]: # Check again
+            user_storage[user_id]["file_list"].sort(key=lambda x: x[0] if isinstance(x, list) and len(x)>0 else "") # Safer sort key
+        else:
+            logger.error(f"[{user_id}] User storage disappeared before final sort in read_files.")
+    except Exception as sort_final_err:
+        logger.exception(f"[{user_id}] Error sorting final file_list: {sort_final_err}")
+
+    logger.info(f"[{user_id}] Finished read_files function.")
 
 
 async def update_estimate_for_file(in_path, filename, file_status, online):
