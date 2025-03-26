@@ -53,8 +53,7 @@ SSL_CERTFILE = os.getenv("SSL_CERTFILE")
 SSL_KEYFILE = os.getenv("SSL_KEYFILE")
 SUMMARIZATION = os.getenv("SUMMARIZATION") == "True"
 
-# Throttle interval for UI refreshes (seconds)
-FULL_REFRESH_THROTTLE_SECONDS = 5.0
+# Removed throttling mechanism as it was addressing a symptom, not the root cause
 
 if WINDOWS:
     os.environ["PATH"] += os.pathsep + "ffmpeg/bin"
@@ -711,23 +710,10 @@ def listen(user_id, refresh_file_view):
                 ui_debug_log(f"File processing completed: {previous_file}", important=True)
                 print(f"[DEBUG-LISTEN] File processing completed: {previous_file}")
                 
-                # Apply throttling to full UI refreshes to prevent disconnections
-                current_time = time.time()
-                last_full_refresh = user_storage[user_id].get('last_full_refresh_time', 0)
-                time_since_last_refresh = current_time - last_full_refresh
-                
-                # Decide if we should do a full refresh based on throttle
-                if time_since_last_refresh > FULL_REFRESH_THROTTLE_SECONDS:
-                    # Enough time has passed, do a full refresh
-                    refresh_results = True
-                    user_storage[user_id]['last_full_refresh_time'] = current_time
-                    ui_debug_log(f"Throttle passed ({time_since_last_refresh:.1f}s > {FULL_REFRESH_THROTTLE_SECONDS}s) - performing FULL refresh", important=True)
-                    print(f"[DEBUG-LISTEN] Throttle passed - performing FULL refresh")
-                else:
-                    # Too soon for another full refresh, only update queue
-                    refresh_results = False
-                    ui_debug_log(f"Throttle active ({time_since_last_refresh:.1f}s < {FULL_REFRESH_THROTTLE_SECONDS}s) - skipping full refresh", important=True)
-                    print(f"[DEBUG-LISTEN] Throttle active - skipping full refresh")
+                # Always do a full refresh when a file is completed
+                refresh_results = True
+                ui_debug_log(f"File processing completed - performing full refresh", important=True)
+                print(f"[DEBUG-LISTEN] File processing completed - performing full refresh")
                 
                 # Always delay slightly before any refresh
                 try:
@@ -899,6 +885,32 @@ async def editor():
     else:
         ui.label("Session abgelaufen. Bitte öffne den Editor erneut.")
 
+
+# API endpoint to receive WebSocket errors from client-side
+@ui.post('/api/ws_error')
+async def handle_ws_error(client_data: dict):
+    """Logs WebSocket errors reported from the browser."""
+    ui_debug_log(f"CLIENT-SIDE WEBSOCKET ERROR: {client_data}", important=True)
+    return {"status": "logged"}
+
+# WebSocket connection event handlers for diagnosing handshake failures
+@app.on_connect
+def handle_connect(event):
+    """Log when a WebSocket connection is established."""
+    user_id = str(app.storage.browser.get("id", "unknown"))
+    ui_debug_log(f"WebSocket CONNECTED: client={event.socket_id}, user_id={user_id}", important=True)
+    
+@app.on_disconnect
+def handle_disconnect(event):
+    """Log when a WebSocket connection is dropped."""
+    user_id = str(app.storage.browser.get("id", "unknown"))
+    ui_debug_log(f"WebSocket DISCONNECTED: client={event.socket_id}, user_id={user_id}", important=True)
+
+@app.on_reconnect
+def handle_reconnect(event):
+    """Log when a client attempts to reconnect."""
+    user_id = str(app.storage.browser.get("id", "unknown"))
+    ui_debug_log(f"WebSocket RECONNECTING: client={event.socket_id}, user_id={user_id}", important=True)
 
 def inspect_docker_container(user_id):
     """Diagnostic function to check Docker container status related to progress updates."""
@@ -1079,10 +1091,28 @@ async def main_page():
             display_results(user_id=user_id)
 
     if ONLINE:
+        # Get existing ID or create a new one
         user_id = str(app.storage.browser.get("id", ""))
+        ui_debug_log(f"ONLINE MODE: Got browser user_id: '{user_id}'", important=True)
+        
+        # Check the browser storage consistency
+        if user_id == "":
+            # Generate a new ID on first visit
+            import uuid
+            user_id = str(uuid.uuid4())
+            ui_debug_log(f"Generated new user_id: '{user_id}'", important=True)
+            app.storage.browser["id"] = user_id
     else:
         user_id = "local"
+        ui_debug_log("OFFLINE MODE: Using local user_id", important=True)
 
+    # Log storage state before initialization
+    if user_id in user_storage:
+        ui_debug_log(f"User '{user_id}' already exists in user_storage", important=True)
+    else:
+        ui_debug_log(f"Creating new user_storage entry for '{user_id}'", important=True)
+    
+    # Initialize user storage
     user_storage[user_id] = {
         "uploaded_files": set(),
         "file_list": [],
@@ -1169,6 +1199,30 @@ async def main_page():
                 ).props("no-caps")
 
             display_files(user_id=user_id)
+            
+            # Add WebSocket handshake error monitoring script
+            ui.add_body_html("""
+            <script>
+                // Monitor for WebSocket errors on the client side
+                window.addEventListener('error', function(event) {
+                    if (event.message && event.message.includes('WebSocket')) {
+                        // Report WebSocket errors to the server
+                        fetch('/api/ws_error', {
+                            method: 'POST',
+                            headers: { 'Content-Type': 'application/json' },
+                            body: JSON.stringify({
+                                message: event.message,
+                                source: event.filename,
+                                lineno: event.lineno,
+                                colno: event.colno,
+                                error: event.error ? event.error.toString() : null,
+                                time: new Date().toISOString()
+                            })
+                        }).catch(e => console.error('Failed to report WebSocket error:', e));
+                    }
+                });
+            </script>
+            """)
 
 
 if __name__ in {"__main__", "__mp_main__"}:
@@ -1181,6 +1235,12 @@ if __name__ in {"__main__", "__mp_main__"}:
     
     ui_debug_log("UI process initialized", important=True)
     ui_debug_log(f"DEVICE={os.getenv('DEVICE')}, ROOT={ROOT}, ONLINE={ONLINE}")
+    
+    # Log storage secret info (helps diagnose handshake failures)
+    if STORAGE_SECRET:
+        ui_debug_log(f"Storage secret configured: length={len(STORAGE_SECRET)}, first_chars={STORAGE_SECRET[:3]}...", important=True)
+    else:
+        ui_debug_log("WARNING: No storage secret configured!", important=True)
     
     # Create all required directories at startup
     for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
