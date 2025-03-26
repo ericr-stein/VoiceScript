@@ -16,7 +16,7 @@ from src.help import (
     help as help_page,
 )  # Renamed to avoid conflict with built-in help function
 
-# Load environment variables
+# Load environment variablesz
 load_dotenv()
 
 # Configuration
