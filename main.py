@@ -185,37 +185,66 @@ def handle_added(e: events.GenericEventArguments, user_id, upload_element, refre
     refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
 
 
-def prepare_download(file_name, user_id):
+async def prepare_download(file_name, user_id):
     """Add offline functions to the editor before downloading."""
+    import asyncio  # Import here to maintain compatibility
+
     out_user_dir = join(ROOT, "data", "out", user_id)
     full_file_name = join(out_user_dir, file_name + ".html")
 
-    with open(full_file_name, "r", encoding="utf-8") as f:
-        content = f.read()
+    # Read file asynchronously
+    async def read_file_async(path):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: open(path, "r", encoding="utf-8").read())
+    
+    # Write file asynchronously
+    async def write_file_async(path, data):
+        loop = asyncio.get_event_loop()
+        return await loop.run_in_executor(None, lambda: open(path, "w", encoding="utf-8").write(data))
 
-    update_file = full_file_name + "update"
-    if os.path.exists(update_file):
-        with open(update_file, "r", encoding="utf-8") as f:
-            new_content = f.read()
-        start_index = content.find("</nav>") + len("</nav>")
-        end_index = content.find("var fileName = ")
-        content = content[:start_index] + new_content + content[end_index:]
+    try:
+        # Read initial HTML content
+        content = await read_file_async(full_file_name)
 
-        with open(full_file_name, "w", encoding="utf-8") as f:
-            f.write(content)
+        # Process update file if it exists
+        update_file = full_file_name + "update"
+        if os.path.exists(update_file):
+            new_content = await read_file_async(update_file)
+            start_index = content.find("</nav>") + len("</nav>")
+            end_index = content.find("var fileName = ")
+            content = content[:start_index] + new_content + content[end_index:]
 
-        os.remove(update_file)
+            await write_file_async(full_file_name, content)
+            
+            # Remove asynchronously
+            await asyncio.get_event_loop().run_in_executor(None, lambda: os.remove(update_file) if os.path.exists(update_file) else None)
 
-    content = content.replace(
-        "<div>Bitte den Editor herunterladen, um den Viewer zu erstellen.</div>",
-        '<a href="#" id="viewer-link" onclick="viewerClick()" class="btn btn-primary">Viewer erstellen</a>',
-    )
-    if "var base64str = " not in content:
-        video_file_path = join(out_user_dir, file_name + ".mp4")
-        with open(video_file_path, "rb") as video_file:
-            video_base64 = base64.b64encode(video_file.read()).decode("utf-8")
+        # Replace viewer creation link
+        content = content.replace(
+            "<div>Bitte den Editor herunterladen, um den Viewer zu erstellen.</div>",
+            '<a href="#" id="viewer-link" onclick="viewerClick()" class="btn btn-primary">Viewer erstellen</a>',
+        )
+        
+        # Handle base64 encoding of video file
+        if "var base64str = " not in content:
+            video_file_path = join(out_user_dir, file_name + ".mp4")
+            
+            # Make base64 encoding non-blocking
+            async def encode_video_async(video_path):
+                loop = asyncio.get_event_loop()
+                def read_and_encode():
+                    try:
+                        with open(video_path, "rb") as video_file:
+                            return base64.b64encode(video_file.read()).decode("utf-8")
+                    except Exception as e:
+                        print(f"Error encoding video: {str(e)}")
+                        return ""
+                        
+                return await loop.run_in_executor(None, read_and_encode)
+            
+            video_base64 = await encode_video_async(video_file_path)
 
-        video_content = f"""
+            video_content = f"""
 var base64str = "{video_base64}";
 var binary = atob(base64str);
 var len = binary.length;
@@ -236,11 +265,78 @@ setTimeout(function() {{
 }}, 100);
 </script>
 """
-        content = content.replace("</script>", video_content)
+            content = content.replace("</script>", video_content)
 
-    final_file_name = full_file_name + "final"
-    with open(final_file_name, "w", encoding="utf-8") as f:
-        f.write(content)
+        # Write final HTML file
+        final_file_name = full_file_name + "final"
+        await write_file_async(final_file_name, content)
+        print(f"Asynchronously prepared download for {file_name}")
+    except Exception as e:
+        print(f"Error in async prepare_download: {str(e)}")
+        # Fall back to synchronous version if there's an error
+        prepare_download_sync(file_name, user_id)
+
+# Synchronous fallback version
+def prepare_download_sync(file_name, user_id):
+    """Synchronous fallback for prepare_download."""
+    try:
+        out_user_dir = join(ROOT, "data", "out", user_id)
+        full_file_name = join(out_user_dir, file_name + ".html")
+
+        with open(full_file_name, "r", encoding="utf-8") as f:
+            content = f.read()
+
+        update_file = full_file_name + "update"
+        if os.path.exists(update_file):
+            with open(update_file, "r", encoding="utf-8") as f:
+                new_content = f.read()
+            start_index = content.find("</nav>") + len("</nav>")
+            end_index = content.find("var fileName = ")
+            content = content[:start_index] + new_content + content[end_index:]
+
+            with open(full_file_name, "w", encoding="utf-8") as f:
+                f.write(content)
+
+            os.remove(update_file)
+
+        content = content.replace(
+            "<div>Bitte den Editor herunterladen, um den Viewer zu erstellen.</div>",
+            '<a href="#" id="viewer-link" onclick="viewerClick()" class="btn btn-primary">Viewer erstellen</a>',
+        )
+        if "var base64str = " not in content:
+            video_file_path = join(out_user_dir, file_name + ".mp4")
+            with open(video_file_path, "rb") as video_file:
+                video_base64 = base64.b64encode(video_file.read()).decode("utf-8")
+
+            video_content = f"""
+var base64str = "{video_base64}";
+var binary = atob(base64str);
+var len = binary.length;
+var buffer = new ArrayBuffer(len);
+var view = new Uint8Array(buffer);
+for (var i = 0; i < len; i++) {{
+    view[i] = binary.charCodeAt(i);
+}}
+
+var blob = new Blob([view], {{ type: "video/MP4" }});
+var url = URL.createObjectURL(blob);
+
+var video = document.getElementById("player");
+
+setTimeout(function() {{
+  video.pause();
+  video.setAttribute('src', url);
+}}, 100);
+</script>
+"""
+            content = content.replace("</script>", video_content)
+
+        final_file_name = full_file_name + "final"
+        with open(final_file_name, "w", encoding="utf-8") as f:
+            f.write(content)
+        print(f"Synchronously prepared download for {file_name}")
+    except Exception as e:
+        print(f"Error in sync prepare_download: {str(e)}")
 
 
 async def download_editor(file_name, user_id):
@@ -368,26 +464,59 @@ async def open_editor(file_name, user_id):
 
 
 async def download_all(user_id):
-    """Simple download function for all files - matches original implementation style."""
+    """Asynchronous download function for all files."""
+    import asyncio
+    
     # Ensure output directory exists
     out_dir = join(ROOT, "data", "out", user_id)
     os.makedirs(out_dir, exist_ok=True)
     
-    # Use a fixed filename as in the original implementation
-    zip_file_path = join(out_dir, "transcribed_files.zip")
+    # Use a timestamp to create a unique filename
+    timestamp = int(time.time())
+    zip_file_path = join(out_dir, f"transcribed_files_{timestamp}.zip")
     
-    # Create the zip file with all completed files
-    with zipfile.ZipFile(zip_file_path, "w", allowZip64=True) as myzip:
-        for file_status in user_storage[user_id]["file_list"]:
-            if file_status[2] == 100.0:
-                prepare_download(file_status[0], user_id)
-                final_html = join(out_dir, file_status[0] + ".htmlfinal")
-                if os.path.exists(final_html):
-                    myzip.write(final_html, arcname=file_status[0] + ".html")
-                    print(f"Added to zip: {file_status[0]}.html")
+    # Create the zip file with all completed files in a separate thread
+    async def create_zip_async(file_path):
+        loop = asyncio.get_event_loop()
+        
+        def zip_files():
+            try:
+                completed_files = 0
+                with zipfile.ZipFile(file_path, "w", allowZip64=True) as myzip:
+                    for file_status in user_storage[user_id]["file_list"]:
+                        if file_status[2] == 100.0:
+                            try:
+                                # Use synchronous version to avoid nested async issues
+                                prepare_download_sync(file_status[0], user_id)
+                                final_html = join(out_dir, file_status[0] + ".htmlfinal")
+                                if os.path.exists(final_html):
+                                    myzip.write(final_html, arcname=file_status[0] + ".html")
+                                    completed_files += 1
+                                    print(f"Added to zip: {file_status[0]}.html")
+                            except Exception as e:
+                                print(f"Error processing {file_status[0]}: {str(e)}")
+                
+                print(f"ZIP file created with {completed_files} files")
+                return file_path
+            except Exception as e:
+                print(f"Error creating ZIP file: {str(e)}")
+                return None
+        
+        return await loop.run_in_executor(None, zip_files)
     
-    # Download using the simplest form - exactly like the original code
-    ui.download(zip_file_path)
+    try:
+        # Start ZIP creation and wait for it to complete
+        result_path = await create_zip_async(zip_file_path)
+        
+        if result_path and os.path.exists(result_path):
+            # Download using direct file reference
+            ui.download(result_path)
+            ui.notify(f"Download started: transcribed_files.zip", color="positive")
+        else:
+            ui.notify("Failed to create ZIP archive", color="negative")
+    except Exception as e:
+        print(f"Error in download_all: {str(e)}")
+        ui.notify(f"Download error: {str(e)}", color="negative")
 
 
 def delete_file(file_name, user_id, refresh_file_view):
@@ -507,27 +636,57 @@ async def editor():
     """Prepare and open the editor for online editing."""
 
     async def handle_save(full_file_name):
-        content = ""
-        for i in range(100):
-            content_chunk = await ui.run_javascript(
-                f"""
-var content = String(document.documentElement.innerHTML);
-var start_index = content.indexOf('<!--start-->') + '<!--start-->'.length;
-content = content.slice(start_index, content.indexOf('var fileName = ', start_index))
-content = content.slice(content.indexOf('</nav>') + '</nav>'.length, content.length)
-return content.slice({i * 500_000}, {(i + 1) * 500_000});
-""",
-                timeout=60.0,
-            )
-            content += content_chunk
-            if len(content_chunk) < 500_000:
-                break
+        import asyncio
+        
+        try:
+            # Get content from browser in chunks to avoid memory issues
+            content = ""
+            try:
+                for i in range(100):
+                    content_chunk = await ui.run_javascript(
+                        f"""
+    var content = String(document.documentElement.innerHTML);
+    var start_index = content.indexOf('<!--start-->') + '<!--start-->'.length;
+    content = content.slice(start_index, content.indexOf('var fileName = ', start_index))
+    content = content.slice(content.indexOf('</nav>') + '</nav>'.length, content.length)
+    return content.slice({i * 500_000}, {(i + 1) * 500_000});
+    """,
+                        timeout=60.0,
+                    )
+                    content += content_chunk
+                    if len(content_chunk) < 500_000:
+                        break
+            except Exception as e:
+                print(f"Error retrieving editor content: {str(e)}")
+                ui.notify(f"Error retrieving content: {str(e)}", color="negative")
+                return
 
-        update_file = full_file_name + "update"
-        with open(update_file, "w", encoding="utf-8") as f:
-            f.write(content.strip())
-
-        ui.notify("Änderungen gespeichert.")
+            # Write file asynchronously
+            update_file = full_file_name + "update"
+            
+            async def write_file_async(path, data):
+                loop = asyncio.get_event_loop()
+                def write_file():
+                    try:
+                        with open(path, "w", encoding="utf-8") as f:
+                            f.write(data)
+                        return True
+                    except Exception as file_error:
+                        print(f"Error writing file {path}: {str(file_error)}")
+                        return False
+                        
+                return await loop.run_in_executor(None, write_file)
+            
+            # Write file in background
+            success = await write_file_async(update_file, content.strip())
+            
+            if success:
+                ui.notify("Änderungen gespeichert.", color="positive")
+            else:
+                ui.notify("Fehler beim Speichern der Änderungen", color="negative")
+        except Exception as e:
+            print(f"Error in handle_save: {str(e)}")
+            ui.notify(f"Unerwarteter Fehler: {str(e)}", color="negative")
 
     user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
 
