@@ -368,75 +368,26 @@ async def open_editor(file_name, user_id):
 
 
 async def download_all(user_id):
-    """Simplified download function for all files using direct src parameter."""
-    try:
-        # Make sure output directory exists
-        out_dir = join(ROOT, "data", "out", user_id)
-        os.makedirs(out_dir, exist_ok=True)
-        
-        # Create a unique filename with timestamp to prevent conflicts
-        timestamp = int(time.time())
-        zip_file_path = join(out_dir, f"transcribed_files_{timestamp}.zip")
-        
-        # Create a new zip file
-        with zipfile.ZipFile(zip_file_path, "w", allowZip64=True) as myzip:
-            count = 0
-            errors = []
-            
-            for file_status in user_storage[user_id]["file_list"]:
-                if file_status[2] == 100.0:
-                    try:
-                        # Prepare each file
-                        prepare_download(file_status[0], user_id)
-                        final_html = join(out_dir, file_status[0] + ".htmlfinal")
-                        
-                        # Verify the file exists before adding it
-                        if os.path.exists(final_html):
-                            myzip.write(final_html, arcname=file_status[0] + ".html")
-                            count += 1
-                            print(f"Added to zip: {file_status[0]}.html")
-                        else:
-                            error_msg = f"Could not find {file_status[0]}.htmlfinal"
-                            errors.append(error_msg)
-                            print(error_msg)
-                            ui.notify(f"Warning: {error_msg}", color="warning")
-                    except Exception as e:
-                        error_msg = f"Error processing {file_status[0]}: {str(e)}"
-                        errors.append(error_msg)
-                        print(error_msg)
-        
-        # Check if we actually added any files
-        if count == 0:
-            ui.notify("No files were added to the zip archive", color="warning")
-            if os.path.exists(zip_file_path):
-                os.remove(zip_file_path)
-            return
-            
-        # Check if the zip file was created correctly
-        if not os.path.exists(zip_file_path) or os.path.getsize(zip_file_path) == 0:
-            ui.notify("Error creating zip file", color="negative")
-            return
-            
-        # Use direct src parameter instead of content - more reliable approach for this app
-        ui.download(
-            src=zip_file_path,  # Direct source path instead of loading content
-            filename="transcribed_files.zip"
-        )
-        
-        # Show success notification with error summary if any
-        if errors:
-            ui.notify(f"Download started with {len(errors)} errors. See console for details.", color="warning")
-        else:
-            ui.notify(f"Download started: transcribed_files.zip with {count} files", color="positive")
-        
-        # No cleanup - file will remain on server for download
-        # This matches the pattern used by other download functions in this application
-            
-    except Exception as e:
-        # Handle any unexpected errors
-        error_msg = f"Download error: {str(e)}"
-        print(error_msg)
-        ui.notify(error_msg, color="negative")
+    """Simple download function for all files - matches original implementation style."""
+    # Ensure output directory exists
+    out_dir = join(ROOT, "data", "out", user_id)
+    os.makedirs(out_dir, exist_ok=True)
+    
+    # Use a fixed filename as in the original implementation
+    zip_file_path = join(out_dir, "transcribed_files.zip")
+    
+    # Create the zip file with all completed files
+    with zipfile.ZipFile(zip_file_path, "w", allowZip64=True) as myzip:
+        for file_status in user_storage[user_id]["file_list"]:
+            if file_status[2] == 100.0:
+                prepare_download(file_status[0], user_id)
+                final_html = join(out_dir, file_status[0] + ".htmlfinal")
+                if os.path.exists(final_html):
+                    myzip.write(final_html, arcname=file_status[0] + ".html")
+                    print(f"Added to zip: {file_status[0]}.html")
+    
+    # Download using the simplest form - exactly like the original code
+    ui.download(zip_file_path)
 
 
 def delete_file(file_name, user_id, refresh_file_view):
