@@ -4,36 +4,11 @@ import shutil
 import zipfile
 import datetime
 import base64
-import traceback
 from os import listdir
 from os.path import isfile, join
 from functools import partial
 from dotenv import load_dotenv
 from nicegui import ui, events, app
-from datetime import datetime
-
-# Direct file logging for diagnosing freezes
-UI_DEBUG_LOG_PATH = "ui_debug.log"
-
-def ui_debug_log(message, important=False):
-    """Write directly to a file even if the container freezes"""
-    try:
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
-        with open(UI_DEBUG_LOG_PATH, "a") as f:
-            if important:
-                line = f"[{timestamp}] !!! CRITICAL OPERATION !!! {message}\n"
-            else:
-                line = f"[{timestamp}] {message}\n"
-            f.write(line)
-            f.flush()  # Force write to disk
-    except Exception as e:
-        # Cannot use normal logging if process is frozen
-        try:
-            with open("ui_debug_error.log", "a") as f:
-                f.write(f"Error in ui_debug_log: {str(e)}\n")
-                f.flush()
-        except:
-            pass
 
 from data.const import LANGUAGES, INVERTED_LANGUAGES
 from src.util import time_estimate
@@ -52,9 +27,6 @@ WINDOWS = os.getenv("WINDOWS") == "True"
 SSL_CERTFILE = os.getenv("SSL_CERTFILE")
 SSL_KEYFILE = os.getenv("SSL_KEYFILE")
 SUMMARIZATION = os.getenv("SUMMARIZATION") == "True"
-
-# Throttle interval for UI refreshes (seconds)
-FULL_REFRESH_THROTTLE_SECONDS = 5.0
 
 if WINDOWS:
     os.environ["PATH"] += os.pathsep + "ffmpeg/bin"
@@ -213,158 +185,62 @@ def handle_added(e: events.GenericEventArguments, user_id, upload_element, refre
     refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
 
 
-async def prepare_download(file_name, user_id):
+def prepare_download(file_name, user_id):
     """Add offline functions to the editor before downloading."""
-    import asyncio  # Import here to maintain compatibility
-
     out_user_dir = join(ROOT, "data", "out", user_id)
     full_file_name = join(out_user_dir, file_name + ".html")
 
-    # Read file asynchronously
-    async def read_file_async(path):
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: open(path, "r", encoding="utf-8").read())
-    
-    # Write file asynchronously
-    async def write_file_async(path, data):
-        loop = asyncio.get_event_loop()
-        return await loop.run_in_executor(None, lambda: open(path, "w", encoding="utf-8").write(data))
+    with open(full_file_name, "r", encoding="utf-8") as f:
+        content = f.read()
 
-    try:
-        # Read initial HTML content
-        content = await read_file_async(full_file_name)
+    update_file = full_file_name + "update"
+    if os.path.exists(update_file):
+        with open(update_file, "r", encoding="utf-8") as f:
+            new_content = f.read()
+        start_index = content.find("</nav>") + len("</nav>")
+        end_index = content.find("var fileName = ")
+        content = content[:start_index] + new_content + content[end_index:]
 
-        # Process update file if it exists
-        update_file = full_file_name + "update"
-        if os.path.exists(update_file):
-            new_content = await read_file_async(update_file)
-            start_index = content.find("</nav>") + len("</nav>")
-            end_index = content.find("var fileName = ")
-            content = content[:start_index] + new_content + content[end_index:]
-
-            await write_file_async(full_file_name, content)
-            
-            # Remove asynchronously
-            await asyncio.get_event_loop().run_in_executor(None, lambda: os.remove(update_file) if os.path.exists(update_file) else None)
-
-        # Replace viewer creation link
-        content = content.replace(
-            "<div>Bitte den Editor herunterladen, um den Viewer zu erstellen.</div>",
-            '<a href="#" id="viewer-link" onclick="viewerClick()" class="btn btn-primary">Viewer erstellen</a>',
-        )
-        
-        # Handle base64 encoding of video file
-        if "var base64str = " not in content:
-            video_file_path = join(out_user_dir, file_name + ".mp4")
-            
-            # Make base64 encoding non-blocking
-            async def encode_video_async(video_path):
-                loop = asyncio.get_event_loop()
-                def read_and_encode():
-                    try:
-                        with open(video_path, "rb") as video_file:
-                            return base64.b64encode(video_file.read()).decode("utf-8")
-                    except Exception as e:
-                        print(f"Error encoding video: {str(e)}")
-                        return ""
-                        
-                return await loop.run_in_executor(None, read_and_encode)
-            
-            video_base64 = await encode_video_async(video_file_path)
-
-            video_content = f"""
-var base64str = "{video_base64}";
-var binary = atob(base64str);
-var len = binary.length;
-var buffer = new ArrayBuffer(len);
-var view = new Uint8Array(buffer);
-for (var i = 0; i < len; i++) {{
-    view[i] = binary.charCodeAt(i);
-}}
-
-var blob = new Blob([view], {{ type: "video/MP4" }});
-var url = URL.createObjectURL(blob);
-
-var video = document.getElementById("player");
-
-setTimeout(function() {{
-  video.pause();
-  video.setAttribute('src', url);
-}}, 100);
-</script>
-"""
-            content = content.replace("</script>", video_content)
-
-        # Write final HTML file
-        final_file_name = full_file_name + "final"
-        await write_file_async(final_file_name, content)
-        print(f"Asynchronously prepared download for {file_name}")
-    except Exception as e:
-        print(f"Error in async prepare_download: {str(e)}")
-        # Fall back to synchronous version if there's an error
-        prepare_download_sync(file_name, user_id)
-
-# Synchronous fallback version
-def prepare_download_sync(file_name, user_id):
-    """Synchronous fallback for prepare_download."""
-    try:
-        out_user_dir = join(ROOT, "data", "out", user_id)
-        full_file_name = join(out_user_dir, file_name + ".html")
-
-        with open(full_file_name, "r", encoding="utf-8") as f:
-            content = f.read()
-
-        update_file = full_file_name + "update"
-        if os.path.exists(update_file):
-            with open(update_file, "r", encoding="utf-8") as f:
-                new_content = f.read()
-            start_index = content.find("</nav>") + len("</nav>")
-            end_index = content.find("var fileName = ")
-            content = content[:start_index] + new_content + content[end_index:]
-
-            with open(full_file_name, "w", encoding="utf-8") as f:
-                f.write(content)
-
-            os.remove(update_file)
-
-        content = content.replace(
-            "<div>Bitte den Editor herunterladen, um den Viewer zu erstellen.</div>",
-            '<a href="#" id="viewer-link" onclick="viewerClick()" class="btn btn-primary">Viewer erstellen</a>',
-        )
-        if "var base64str = " not in content:
-            video_file_path = join(out_user_dir, file_name + ".mp4")
-            with open(video_file_path, "rb") as video_file:
-                video_base64 = base64.b64encode(video_file.read()).decode("utf-8")
-
-            video_content = f"""
-var base64str = "{video_base64}";
-var binary = atob(base64str);
-var len = binary.length;
-var buffer = new ArrayBuffer(len);
-var view = new Uint8Array(buffer);
-for (var i = 0; i < len; i++) {{
-    view[i] = binary.charCodeAt(i);
-}}
-
-var blob = new Blob([view], {{ type: "video/MP4" }});
-var url = URL.createObjectURL(blob);
-
-var video = document.getElementById("player");
-
-setTimeout(function() {{
-  video.pause();
-  video.setAttribute('src', url);
-}}, 100);
-</script>
-"""
-            content = content.replace("</script>", video_content)
-
-        final_file_name = full_file_name + "final"
-        with open(final_file_name, "w", encoding="utf-8") as f:
+        with open(full_file_name, "w", encoding="utf-8") as f:
             f.write(content)
-        print(f"Synchronously prepared download for {file_name}")
-    except Exception as e:
-        print(f"Error in sync prepare_download: {str(e)}")
+
+        os.remove(update_file)
+
+    content = content.replace(
+        "<div>Bitte den Editor herunterladen, um den Viewer zu erstellen.</div>",
+        '<a href="#" id="viewer-link" onclick="viewerClick()" class="btn btn-primary">Viewer erstellen</a>',
+    )
+    if "var base64str = " not in content:
+        video_file_path = join(out_user_dir, file_name + ".mp4")
+        with open(video_file_path, "rb") as video_file:
+            video_base64 = base64.b64encode(video_file.read()).decode("utf-8")
+
+        video_content = f"""
+var base64str = "{video_base64}";
+var binary = atob(base64str);
+var len = binary.length;
+var buffer = new ArrayBuffer(len);
+var view = new Uint8Array(buffer);
+for (var i = 0; i < len; i++) {{
+    view[i] = binary.charCodeAt(i);
+}}
+
+var blob = new Blob([view], {{ type: "video/MP4" }});
+var url = URL.createObjectURL(blob);
+
+var video = document.getElementById("player");
+
+setTimeout(function() {{
+  video.pause();
+  video.setAttribute('src', url);
+}}, 100);
+</script>
+"""
+        content = content.replace("</script>", video_content)
+
+    final_file_name = full_file_name + "final"
+    with open(final_file_name, "w", encoding="utf-8") as f:
+        f.write(content)
 
 
 async def download_editor(file_name, user_id):
@@ -492,59 +368,26 @@ async def open_editor(file_name, user_id):
 
 
 async def download_all(user_id):
-    """Asynchronous download function for all files."""
-    import asyncio
-    
+    """Simple download function for all files - matches original implementation style."""
     # Ensure output directory exists
     out_dir = join(ROOT, "data", "out", user_id)
     os.makedirs(out_dir, exist_ok=True)
     
-    # Use a timestamp to create a unique filename
-    timestamp = int(time.time())
-    zip_file_path = join(out_dir, f"transcribed_files_{timestamp}.zip")
+    # Use a fixed filename as in the original implementation
+    zip_file_path = join(out_dir, "transcribed_files.zip")
     
-    # Create the zip file with all completed files in a separate thread
-    async def create_zip_async(file_path):
-        loop = asyncio.get_event_loop()
-        
-        def zip_files():
-            try:
-                completed_files = 0
-                with zipfile.ZipFile(file_path, "w", allowZip64=True) as myzip:
-                    for file_status in user_storage[user_id]["file_list"]:
-                        if file_status[2] == 100.0:
-                            try:
-                                # Use synchronous version to avoid nested async issues
-                                prepare_download_sync(file_status[0], user_id)
-                                final_html = join(out_dir, file_status[0] + ".htmlfinal")
-                                if os.path.exists(final_html):
-                                    myzip.write(final_html, arcname=file_status[0] + ".html")
-                                    completed_files += 1
-                                    print(f"Added to zip: {file_status[0]}.html")
-                            except Exception as e:
-                                print(f"Error processing {file_status[0]}: {str(e)}")
-                
-                print(f"ZIP file created with {completed_files} files")
-                return file_path
-            except Exception as e:
-                print(f"Error creating ZIP file: {str(e)}")
-                return None
-        
-        return await loop.run_in_executor(None, zip_files)
+    # Create the zip file with all completed files
+    with zipfile.ZipFile(zip_file_path, "w", allowZip64=True) as myzip:
+        for file_status in user_storage[user_id]["file_list"]:
+            if file_status[2] == 100.0:
+                prepare_download(file_status[0], user_id)
+                final_html = join(out_dir, file_status[0] + ".htmlfinal")
+                if os.path.exists(final_html):
+                    myzip.write(final_html, arcname=file_status[0] + ".html")
+                    print(f"Added to zip: {file_status[0]}.html")
     
-    try:
-        # Start ZIP creation and wait for it to complete
-        result_path = await create_zip_async(zip_file_path)
-        
-        if result_path and os.path.exists(result_path):
-            # Download using direct file reference
-            ui.download(result_path)
-            ui.notify(f"Download started: transcribed_files.zip", color="positive")
-        else:
-            ui.notify("Failed to create ZIP archive", color="negative")
-    except Exception as e:
-        print(f"Error in download_all: {str(e)}")
-        ui.notify(f"Download error: {str(e)}", color="negative")
+    # Download using the simplest form - exactly like the original code
+    ui.download(zip_file_path)
 
 
 def delete_file(file_name, user_id, refresh_file_view):
@@ -587,32 +430,17 @@ def delete_file(file_name, user_id, refresh_file_view):
 
 def listen(user_id, refresh_file_view):
     """Periodically check if a file is being transcribed and calculate its estimated progress."""
-    print(f"[DEBUG-LISTEN] Running listen check for user: {user_id}")
-    t_start = time.time()
-    
-    # Log directly to file in case of container freeze
-    ui_debug_log(f"Running listen check for user: {user_id}")
-    
     worker_user_dir = join(ROOT, "data", "worker", user_id)
     
     if os.path.exists(worker_user_dir):
-        try:
-            worker_files = listdir(worker_user_dir)
-            ui_debug_log(f"Found {len(worker_files)} worker files in {worker_user_dir}")
-            print(f"[DEBUG-LISTEN] Found {len(worker_files)} worker files in {worker_user_dir}")
-        except Exception as e:
-            ui_debug_log(f"ERROR listing worker dir: {str(e)}", important=True)
-            print(f"[DEBUG-LISTEN] Error listing worker dir: {str(e)}")
-            return
+        worker_files = listdir(worker_user_dir)
         
         for f in worker_files:
             file_path = join(worker_user_dir, f)
-            print(f"[DEBUG-LISTEN] Checking worker file: {f}")
             
             if isfile(file_path):
                 parts = f.split("_")
                 if len(parts) < 3:
-                    print(f"[DEBUG-LISTEN] Skipping invalid worker file format: {f}")
                     continue
                     
                 estimated_time = float(parts[0])
@@ -620,17 +448,14 @@ def listen(user_id, refresh_file_view):
                 file_name = "_".join(parts[2:])
                 progress = min(0.975, (time.time() - start) / estimated_time)
                 estimated_time_left = round(max(1, estimated_time - (time.time() - start)))
-                print(f"[DEBUG-LISTEN] Processing file {file_name}, progress: {progress*100:.1f}%, time left: {estimated_time_left}s")
 
                 in_file = join(ROOT, "data", "in", user_id, file_name)
                 if os.path.exists(in_file):
                     # Show different message for post-processing phase vs normal transcription
                     if progress > 0.95:
                         status_message = f"Position 1/1 in der Warteschlange. Datei wird nachbearbeitet... (SRT-Datei wird erzeugt, Editor wird erstellt)"
-                        print(f"[DEBUG-LISTEN] File {file_name} in post-processing phase")
                     else:
                         status_message = f"Position 1/1 in der Warteschlange. Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}"
-                        print(f"[DEBUG-LISTEN] File {file_name} in transcription phase")
                     
                     user_storage[user_id]["updates"] = [
                         file_name,
@@ -648,145 +473,23 @@ def listen(user_id, refresh_file_view):
                             updated = True
                             break
                 else:
-                    print(f"[DEBUG-LISTEN] Input file no longer exists, removing worker file: {file_path}")
                     os.remove(file_path)
-                
-                should_refresh_results = (user_storage[user_id].get("file_in_progress") != file_name)
-                print(f"[DEBUG-LISTEN] Calling refresh_file_view with refresh_results={should_refresh_results}")
+                    
                 refresh_file_view(
                     user_id=user_id,
                     refresh_queue=True,
-                    refresh_results=should_refresh_results,
+                    refresh_results=(user_storage[user_id].get("file_in_progress") != file_name),
                 )
                 user_storage[user_id]["file_in_progress"] = file_name
-                print(f"[DEBUG-LISTEN] Updated file_in_progress to: {file_name}")
-                
-                t_end = time.time()
-                print(f"[DEBUG-LISTEN] listen() function completed in {t_end - t_start:.3f}s")
                 return
 
-        # No files being processed - THIS IS THE CRITICAL POINT WHERE DISCONNECT HAPPENS
-        ui_debug_log("No worker files found - checking for previous updates", important=True)
-        print(f"[DEBUG-LISTEN] No worker files found for processing - checking for previous updates")
-        
-        # Get system state at this critical point
-        try:
-            ui_debug_log("Getting system process information before file completion handling")
-            os.system("ps aux > ui_processes_before.txt")
-        except Exception as e:
-            ui_debug_log(f"Error getting process info: {str(e)}")
-        
-        # Try to force filesystem sync before critical operations
-        try:
-            os.sync()
-            ui_debug_log("Filesystem buffers synced before file completion handling")
-        except Exception as e:
-            ui_debug_log(f"Error syncing filesystem: {str(e)}")
-            
+        # No files being processed
         if user_storage[user_id].get("updates"):
-            ui_debug_log("Updates found in user_storage - handling file completion", important=True)
-            
-            # Store current file_in_progress before clearing
-            previous_file = user_storage[user_id].get("file_in_progress")
-            ui_debug_log(f"Previous file in progress: {previous_file}")
-            print(f"[DEBUG-LISTEN] Previous file in progress: {previous_file}")
-            
-            # Clear update data - store old value for later checking
-            old_updates = user_storage[user_id].get("updates", [])
-            old_file_in_progress = user_storage[user_id].get("file_in_progress")
-            
-            # CRITICAL OPERATION: Update user_storage
-            ui_debug_log("CRITICAL OPERATION: Updating user_storage", important=True)
-            ui_debug_log(f"Clearing updates: {old_updates}")
-            ui_debug_log(f"Clearing file_in_progress: {old_file_in_progress}")
-            
             user_storage[user_id]["updates"] = []
             user_storage[user_id]["file_in_progress"] = None
-            ui_debug_log("user_storage updates and file_in_progress cleared")
-            print(f"[DEBUG-LISTEN] Cleared updates and file_in_progress")
-            
-            # Only perform full refresh if we actually had a file in progress
-            # This reduces the likelihood of disconnections when files finish processing
-            if previous_file:
-                ui_debug_log(f"File processing completed: {previous_file}", important=True)
-                print(f"[DEBUG-LISTEN] File processing completed: {previous_file}")
-                
-                # Apply throttling to full UI refreshes to prevent disconnections
-                current_time = time.time()
-                last_full_refresh = user_storage[user_id].get('last_full_refresh_time', 0)
-                time_since_last_refresh = current_time - last_full_refresh
-                
-                # Decide if we should do a full refresh based on throttle
-                if time_since_last_refresh > FULL_REFRESH_THROTTLE_SECONDS:
-                    # Enough time has passed, do a full refresh
-                    refresh_results = True
-                    user_storage[user_id]['last_full_refresh_time'] = current_time
-                    ui_debug_log(f"Throttle passed ({time_since_last_refresh:.1f}s > {FULL_REFRESH_THROTTLE_SECONDS}s) - performing FULL refresh", important=True)
-                    print(f"[DEBUG-LISTEN] Throttle passed - performing FULL refresh")
-                else:
-                    # Too soon for another full refresh, only update queue
-                    refresh_results = False
-                    ui_debug_log(f"Throttle active ({time_since_last_refresh:.1f}s < {FULL_REFRESH_THROTTLE_SECONDS}s) - skipping full refresh", important=True)
-                    print(f"[DEBUG-LISTEN] Throttle active - skipping full refresh")
-                
-                # Always delay slightly before any refresh
-                try:
-                    ui_debug_log("Adding delay before UI refresh...")
-                    time.sleep(0.5)  # Small delay to let UI breathe before refresh
-                    ui_debug_log(f"After delay, calling refresh with refresh_results={refresh_results}", important=True)
-                    print(f"[DEBUG-LISTEN] After delay, calling refresh with refresh_results={refresh_results}")
-                    
-                    # Get another process snapshot before the critical call
-                    try:
-                        ui_debug_log("Getting system process information before refresh call")
-                        os.system("ps aux > ui_processes_refresh.txt")
-                    except Exception as e:
-                        ui_debug_log(f"Error getting process info: {str(e)}")
-                    
-                    t_refresh_start = time.time()
-                    refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=refresh_results)
-                    t_refresh_end = time.time()
-                    refresh_duration = t_refresh_end - t_refresh_start
-                    
-                    ui_debug_log(f"Refresh completed in {refresh_duration:.6f}s", important=True)
-                    
-                    # If refresh took unusually long, log it as important
-                    if refresh_duration > 0.5:
-                        ui_debug_log(f"WARNING: UI refresh took {refresh_duration:.6f}s", important=True)
-                except Exception as e:
-                    ui_debug_log(f"ERROR during refresh after completion: {str(e)}\n{traceback.format_exc()}", important=True)
-                    print(f"[DEBUG-LISTEN] Error during refresh after completion: {str(e)}")
-            else:
-                # Less intensive refresh when no file was actually in progress
-                ui_debug_log("No actual file was in progress - performing lighter refresh")
-                print(f"[DEBUG-LISTEN] No actual file was in progress - lighter refresh")
-                
-                t_refresh_start = time.time()
-                refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
-                t_refresh_end = time.time()
-                ui_debug_log(f"Light refresh completed in {t_refresh_end - t_refresh_start:.6f}s")
+            refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
         else:
-            ui_debug_log("No updates found - performing routine refresh")
-            print(f"[DEBUG-LISTEN] No updates found - performing routine refresh")
             refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
-        
-        # Get system state after critical operations
-        try:
-            ui_debug_log("Getting system process information after completion handling")
-            os.system("ps aux > ui_processes_after.txt")
-        except Exception as e:
-            ui_debug_log(f"Error getting process info: {str(e)}")
-        
-        # Force filesystem sync at the end
-        try:
-            os.sync()
-            ui_debug_log("Final filesystem sync performed")
-        except Exception as e:
-            ui_debug_log(f"Error syncing: {str(e)}")
-            
-        t_end = time.time()
-        ui_debug_log(f"listen() function completed in {t_end - t_start:.3f}s")
-        print(f"[DEBUG-LISTEN] listen() function completed in {t_end - t_start:.3f}s")
 
 
 def update_hotwords(user_id):
@@ -804,57 +507,27 @@ async def editor():
     """Prepare and open the editor for online editing."""
 
     async def handle_save(full_file_name):
-        import asyncio
-        
-        try:
-            # Get content from browser in chunks to avoid memory issues
-            content = ""
-            try:
-                for i in range(100):
-                    content_chunk = await ui.run_javascript(
-                        f"""
-    var content = String(document.documentElement.innerHTML);
-    var start_index = content.indexOf('<!--start-->') + '<!--start-->'.length;
-    content = content.slice(start_index, content.indexOf('var fileName = ', start_index))
-    content = content.slice(content.indexOf('</nav>') + '</nav>'.length, content.length)
-    return content.slice({i * 500_000}, {(i + 1) * 500_000});
-    """,
-                        timeout=60.0,
-                    )
-                    content += content_chunk
-                    if len(content_chunk) < 500_000:
-                        break
-            except Exception as e:
-                print(f"Error retrieving editor content: {str(e)}")
-                ui.notify(f"Error retrieving content: {str(e)}", color="negative")
-                return
+        content = ""
+        for i in range(100):
+            content_chunk = await ui.run_javascript(
+                f"""
+var content = String(document.documentElement.innerHTML);
+var start_index = content.indexOf('<!--start-->') + '<!--start-->'.length;
+content = content.slice(start_index, content.indexOf('var fileName = ', start_index))
+content = content.slice(content.indexOf('</nav>') + '</nav>'.length, content.length)
+return content.slice({i * 500_000}, {(i + 1) * 500_000});
+""",
+                timeout=60.0,
+            )
+            content += content_chunk
+            if len(content_chunk) < 500_000:
+                break
 
-            # Write file asynchronously
-            update_file = full_file_name + "update"
-            
-            async def write_file_async(path, data):
-                loop = asyncio.get_event_loop()
-                def write_file():
-                    try:
-                        with open(path, "w", encoding="utf-8") as f:
-                            f.write(data)
-                        return True
-                    except Exception as file_error:
-                        print(f"Error writing file {path}: {str(file_error)}")
-                        return False
-                        
-                return await loop.run_in_executor(None, write_file)
-            
-            # Write file in background
-            success = await write_file_async(update_file, content.strip())
-            
-            if success:
-                ui.notify("Änderungen gespeichert.", color="positive")
-            else:
-                ui.notify("Fehler beim Speichern der Änderungen", color="negative")
-        except Exception as e:
-            print(f"Error in handle_save: {str(e)}")
-            ui.notify(f"Unerwarteter Fehler: {str(e)}", color="negative")
+        update_file = full_file_name + "update"
+        with open(update_file, "w", encoding="utf-8") as f:
+            f.write(content.strip())
+
+        ui.notify("Änderungen gespeichert.")
 
     user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
 
@@ -1172,16 +845,6 @@ async def main_page():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
-    # Clear debug log at startup
-    try:
-        with open(UI_DEBUG_LOG_PATH, "w") as f:
-            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] UI process started\n")
-    except Exception as e:
-        print(f"Error initializing UI debug log: {str(e)}")
-    
-    ui_debug_log("UI process initialized", important=True)
-    ui_debug_log(f"DEVICE={os.getenv('DEVICE')}, ROOT={ROOT}, ONLINE={ONLINE}")
-    
     # Create all required directories at startup
     for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
         os.makedirs(join(ROOT, directory), exist_ok=True)
@@ -1192,14 +855,6 @@ if __name__ in {"__main__", "__mp_main__"}:
             title="TranscriboZH",
             storage_secret=STORAGE_SECRET,
             favicon=join(ROOT, "data", "logo.png"),
-            
-            # Debugging options for WebSocket connections
-            show_server_exceptions=True,  # Show exceptions in browser
-            reconnect_timeout=60,         # Increase reconnect timeout from default (15s)
-            close_timeout=30,             # Increase close timeout for cleaner disconnects
-            heartbeat=5,                  # More frequent heartbeats (5s instead of default)
-            socket_ping_interval=5,       # Keep connection alive with frequent pings
-            socket_ping_timeout=10,       # More time to respond to pings
         )
 
         # run command with ssl certificate
@@ -1211,12 +866,4 @@ if __name__ in {"__main__", "__mp_main__"}:
             port=8080,
             storage_secret=STORAGE_SECRET,
             favicon=join(ROOT, "data", "logo.png"),
-            
-            # Debugging options for WebSocket connections
-            show_server_exceptions=True,  # Show exceptions in browser
-            reconnect_timeout=60,         # Increase reconnect timeout from default (15s)
-            close_timeout=30,             # Increase close timeout for cleaner disconnects
-            heartbeat=5,                  # More frequent heartbeats (5s instead of default)
-            socket_ping_interval=5,       # Keep connection alive with frequent pings
-            socket_ping_timeout=10,       # More time to respond to pings
         )
