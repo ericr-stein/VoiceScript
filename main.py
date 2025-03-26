@@ -614,9 +614,22 @@ def listen(user_id, refresh_file_view):
 
         # No files being processed
         if user_storage[user_id].get("updates"):
+            # Store current file_in_progress before clearing
+            previous_file = user_storage[user_id].get("file_in_progress")
+            
+            # Clear update data
             user_storage[user_id]["updates"] = []
             user_storage[user_id]["file_in_progress"] = None
-            refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
+            
+            # Only perform full refresh if we actually had a file in progress
+            # This reduces the likelihood of disconnections when files finish processing
+            if previous_file:
+                print(f"File processing completed: {previous_file}")
+                # Use a more controlled refresh to avoid UI disconnection
+                refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
+            else:
+                # Less intensive refresh when no file was actually in progress
+                refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
         else:
             refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
 
