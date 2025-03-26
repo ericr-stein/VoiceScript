@@ -801,59 +801,85 @@ async def main_page():
 
     @ui.refreshable
     def display_queue(user_id):
-        logger.info(f"--- Attempting to display queue for user {user_id} ---")
+        logger.info(f"--- Entered SIMPLIFIED display_queue for user {user_id} ---")
         try:
-            if user_id not in user_storage or "file_list" not in user_storage[user_id]:
-                logger.error(f"[{user_id}] user_storage or file_list missing for display_queue.")
-                ui.label("Error: User data not found for queue.")
-                return
+            # Just put a timestamped label to prove it's rendering/refreshing
+            current_time_str = datetime.datetime.now().strftime("%H:%M:%S.%f")
+            ui.label(f"Queue Display Rendered at: {current_time_str} for {user_id}")
+            ui.separator()
+            logger.info(f"--- SIMPLIFIED display_queue: Rendered label for {user_id} ---")
 
-            # Filter for files actually in the queue state
-            files_in_queue = [
-                fs for fs in user_storage[user_id].get("file_list", [])  # Use .get for safety
-                if isinstance(fs, list) and len(fs) > 2 and 0 <= fs[2] < 100.0  # Basic validation
-            ]
-            logger.info(f"[{user_id}] Found {len(files_in_queue)} files in queue state.")
-
-            if not files_in_queue:
-                ui.label("Warteschlange ist leer.")
-                logger.info(f"[{user_id}] Queue is empty, displaying message.")
-                return  # Stop if queue is empty
-
-            # Sort and display
-            for file_status in sorted(files_in_queue, key=lambda x: (x[2], -x[4], x[0])):
-                logger.debug(f"[{user_id}] Displaying queue item: {file_status[0]}")
-
-                # Check if updates exist and apply them
-                current_update = user_storage[user_id].get("updates")
-                if current_update and isinstance(current_update, list) and len(current_update) > 0 and current_update[0] == file_status[0]:
-                    file_status_display = current_update
-                else:
-                    file_status_display = file_status
-
-                # Add more defensive checks before accessing indices
-                if not isinstance(file_status_display, list) or len(file_status_display) < 3:
-                    logger.warning(f"[{user_id}] Malformed file_status, skipping display: {file_status_display}")
-                    continue
-
-                # --- Original UI code ---
-                ui.markdown(f"<b>{file_status_display[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status_display[1]}")
-                ui.button(
-                    "Abbrechen",
-                    on_click=lambda f=file_status_display[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
-                    color="red-5",
-                ).props("no-caps")
-                # Ensure progress value is valid
-                progress_value = file_status_display[2] / 100.0 if isinstance(file_status_display[2], (int, float)) and file_status_display[2] >= 0 else 0.0
-                ui.linear_progress(value=progress_value, show_value=False, size="10px").props("instant-feedback")
-                ui.separator()
-                # --- End Original UI code ---
-
-            logger.info(f"[{user_id}] Finished rendering queue items.")
+            # Optional: Log the length of file_list if it exists, to confirm data availability
+            if user_id in user_storage and "file_list" in user_storage[user_id]:
+                logger.info(f"[{user_id}] File list length check in simplified view: {len(user_storage[user_id]['file_list'])}")
+            else:
+                logger.warning(f"[{user_id}] File list not found in simplified view.")
 
         except Exception as e:
-            logger.exception(f"[{user_id}] !!! ERROR INSIDE display_queue function !!!: {e}")
-            ui.label(f"Fehler beim Anzeigen der Warteschlange: {e}")
+            logger.exception(f"[{user_id}] !!! ERROR INSIDE SIMPLIFIED display_queue !!!: {e}")
+            # Attempt to display error in UI as well
+            try:
+                ui.label(f"Error in simplified queue display: {e}")
+            except Exception: # Avoid errors within error handling
+                pass
+        logger.info(f"--- Exiting SIMPLIFIED display_queue for user {user_id} ---")
+
+
+    # @ui.refreshable
+    # def display_queue(user_id):
+    #     logger.info(f"--- Attempting to display queue for user {user_id} ---")
+    #     try:
+    #         if user_id not in user_storage or "file_list" not in user_storage[user_id]:
+    #             logger.error(f"[{user_id}] user_storage or file_list missing for display_queue.")
+    #             ui.label("Error: User data not found for queue.")
+    #             return
+
+    #         # Filter for files actually in the queue state
+    #         files_in_queue = [
+    #             fs for fs in user_storage[user_id].get("file_list", [])  # Use .get for safety
+    #             if isinstance(fs, list) and len(fs) > 2 and 0 <= fs[2] < 100.0  # Basic validation
+    #         ]
+    #         logger.info(f"[{user_id}] Found {len(files_in_queue)} files in queue state.")
+
+    #         if not files_in_queue:
+    #             ui.label("Warteschlange ist leer.")
+    #             logger.info(f"[{user_id}] Queue is empty, displaying message.")
+    #             return  # Stop if queue is empty
+
+    #         # Sort and display
+    #         for file_status in sorted(files_in_queue, key=lambda x: (x[2], -x[4], x[0])):
+    #             logger.debug(f"[{user_id}] Displaying queue item: {file_status[0]}")
+
+    #             # Check if updates exist and apply them
+    #             current_update = user_storage[user_id].get("updates")
+    #             if current_update and isinstance(current_update, list) and len(current_update) > 0 and current_update[0] == file_status[0]:
+    #                 file_status_display = current_update
+    #             else:
+    #                 file_status_display = file_status
+
+    #             # Add more defensive checks before accessing indices
+    #             if not isinstance(file_status_display, list) or len(file_status_display) < 3:
+    #                 logger.warning(f"[{user_id}] Malformed file_status, skipping display: {file_status_display}")
+    #                 continue
+
+    #             # --- Original UI code ---
+    #             ui.markdown(f"<b>{file_status_display[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status_display[1]}")
+    #             ui.button(
+    #                 "Abbrechen",
+    #                 on_click=lambda f=file_status_display[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
+    #                 color="red-5",
+    #             ).props("no-caps")
+    #             # Ensure progress value is valid
+    #             progress_value = file_status_display[2] / 100.0 if isinstance(file_status_display[2], (int, float)) and file_status_display[2] >= 0 else 0.0
+    #             ui.linear_progress(value=progress_value, show_value=False, size="10px").props("instant-feedback")
+    #             ui.separator()
+    #             # --- End Original UI code ---
+
+    #         logger.info(f"[{user_id}] Finished rendering queue items.")
+
+    #     except Exception as e:
+    #         logger.exception(f"[{user_id}] !!! ERROR INSIDE display_queue function !!!: {e}")
+    #         ui.label(f"Fehler beim Anzeigen der Warteschlange: {e}")
 
     @ui.refreshable
     def display_results(user_id):
