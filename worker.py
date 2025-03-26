@@ -571,7 +571,10 @@ if __name__ == "__main__":
                 logger.error(f"Could not remove processing marker: {str(e)}")
                 
             logger.info(f"Successfully processed file: {file_name}")
-                
+            
+            logger.info("Adding 1-second cooldown to allow filesystem operations to settle")
+            time.sleep(1)  # 1-second pause before proceeding to next file
+
             if DEVICE == "mps":
                 print("Exiting worker to prevent memory leaks with MPS...")
                 exit(0)  # Due to memory leak problems, we restart the worker after each transcription

@@ -13,3 +13,4 @@ ffmpeg/
 .venv
 .clinerules
 memory-bank
+digest.txt
