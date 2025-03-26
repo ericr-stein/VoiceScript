@@ -53,6 +53,9 @@ SSL_CERTFILE = os.getenv("SSL_CERTFILE")
 SSL_KEYFILE = os.getenv("SSL_KEYFILE")
 SUMMARIZATION = os.getenv("SUMMARIZATION") == "True"
 
+# Throttle interval for UI refreshes (seconds)
+FULL_REFRESH_THROTTLE_SECONDS = 5.0
+
 if WINDOWS:
     os.environ["PATH"] += os.pathsep + "ffmpeg/bin"
     os.environ["PATH"] += os.pathsep + "ffmpeg"
@@ -705,17 +708,33 @@ def listen(user_id, refresh_file_view):
             # Only perform full refresh if we actually had a file in progress
             # This reduces the likelihood of disconnections when files finish processing
             if previous_file:
-                ui_debug_log(f"File processing completed: {previous_file} - performing full refresh", important=True)
-                print(f"[DEBUG-LISTEN] File processing completed: {previous_file} - performing FULL refresh")
-                ui_debug_log("*** POTENTIALLY CRITICAL POINT - DISCONNECTIONS MAY OCCUR HERE ***", important=True)
-                print(f"[DEBUG-LISTEN] *** POTENTIALLY CRITICAL POINT - DISCONNECTIONS LIKELY HERE ***")
+                ui_debug_log(f"File processing completed: {previous_file}", important=True)
+                print(f"[DEBUG-LISTEN] File processing completed: {previous_file}")
                 
-                # Delay refresh slightly to avoid disconnect during state transition
+                # Apply throttling to full UI refreshes to prevent disconnections
+                current_time = time.time()
+                last_full_refresh = user_storage[user_id].get('last_full_refresh_time', 0)
+                time_since_last_refresh = current_time - last_full_refresh
+                
+                # Decide if we should do a full refresh based on throttle
+                if time_since_last_refresh > FULL_REFRESH_THROTTLE_SECONDS:
+                    # Enough time has passed, do a full refresh
+                    refresh_results = True
+                    user_storage[user_id]['last_full_refresh_time'] = current_time
+                    ui_debug_log(f"Throttle passed ({time_since_last_refresh:.1f}s > {FULL_REFRESH_THROTTLE_SECONDS}s) - performing FULL refresh", important=True)
+                    print(f"[DEBUG-LISTEN] Throttle passed - performing FULL refresh")
+                else:
+                    # Too soon for another full refresh, only update queue
+                    refresh_results = False
+                    ui_debug_log(f"Throttle active ({time_since_last_refresh:.1f}s < {FULL_REFRESH_THROTTLE_SECONDS}s) - skipping full refresh", important=True)
+                    print(f"[DEBUG-LISTEN] Throttle active - skipping full refresh")
+                
+                # Always delay slightly before any refresh
                 try:
                     ui_debug_log("Adding delay before UI refresh...")
                     time.sleep(0.5)  # Small delay to let UI breathe before refresh
-                    ui_debug_log("After delay, calling refresh with refresh_results=True", important=True)
-                    print(f"[DEBUG-LISTEN] After delay, calling refresh with refresh_results=True")
+                    ui_debug_log(f"After delay, calling refresh with refresh_results={refresh_results}", important=True)
+                    print(f"[DEBUG-LISTEN] After delay, calling refresh with refresh_results={refresh_results}")
                     
                     # Get another process snapshot before the critical call
                     try:
@@ -725,7 +744,7 @@ def listen(user_id, refresh_file_view):
                         ui_debug_log(f"Error getting process info: {str(e)}")
                     
                     t_refresh_start = time.time()
-                    refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
+                    refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=refresh_results)
                     t_refresh_end = time.time()
                     refresh_duration = t_refresh_end - t_refresh_start
                     
