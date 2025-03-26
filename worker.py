@@ -8,6 +8,7 @@ import torch
 import zipfile
 import logging
 import whisperx
+import asyncio
 
 from os.path import isfile, join, normpath, basename, dirname
 from dotenv import load_dotenv
@@ -181,8 +182,6 @@ def transcribe_file(file_name, processing_marker, num_speakers_to_pass=2, multi_
     if not multi_mode:
         output_user_dir = join(ROOT, "data", "out", user_id)
         os.makedirs(output_user_dir, exist_ok=True)
-
-    # --- time_estimate call REMOVED from here ---
 
     track_file_processed(file_name) # Track file stats
 

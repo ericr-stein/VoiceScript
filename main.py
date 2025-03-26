@@ -164,6 +164,7 @@ async def update_estimate_for_file(in_path, filename, file_status, online):
         while len(file_status) < 6:
             file_status.append(None)
 
+        # Properly await the async time_estimate function
         estimated_time, run_time = await time_estimate(join(in_path, filename), online)
         if estimated_time == -1:
             estimated_time = 60  # Default estimate on error
@@ -241,9 +242,12 @@ def handle_reject(e: events.GenericEventArguments):
     ui.notify("Ungültige Datei. Es können nur Audio/Video-Dateien unter 12GB transkribiert werden.")
 
 
-def handle_added(e: events.GenericEventArguments, user_id, upload_element, refresh_file_view):
+async def handle_added(e: events.GenericEventArguments, user_id, upload_element, refresh_file_view):
     """After a file was added, refresh the GUI."""
     upload_element.run_method("removeUploadedFiles")
+    # Manually await read_files first to ensure data is updated
+    await read_files(user_id)
+    # Then call the UI refresh
     refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
 
 
@@ -452,7 +456,8 @@ async def download_all(user_id):
     ui.download(zip_file_path)
 
 
-def delete_file(file_name, user_id, refresh_file_view):
+async def delete_file(file_name, user_id, refresh_file_view):
+    """Asynchronously delete a file and related files, then refresh the file view."""
     paths_to_delete = [
         join(ROOT, "data", "in", user_id, file_name),
         join(ROOT, "data", "error", user_id, file_name),
@@ -486,6 +491,8 @@ def delete_file(file_name, user_id, refresh_file_view):
                 except Exception as e:
                     print(f"Failed to delete worker file {join(worker_user_dir, f)}: {str(e)}")
 
+    # Update data and refresh UI
+    await read_files(user_id)  # Make sure data is updated after deletion
     refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
     ui.notify(f"Datei '{file_name}' wurde entfernt")
 
@@ -735,12 +742,7 @@ async def main_page():
                 ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
                 ui.button(
                     "Abbrechen",
-                    on_click=partial(
-                        delete_file,
-                        file_name=file_status[0],
-                        user_id=user_id,
-                        refresh_file_view=refresh_file_view,
-                    ),
+                    on_click=lambda f=file_status[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
                     color="red-5",
                 ).props("no-caps")
                 ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
@@ -755,26 +757,22 @@ async def main_page():
             if file_status[2] >= 100.0:
                 ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
                 with ui.row():
+                    # Use lambda functions that create tasks for async functions
                     ui.button(
                         "Editor herunterladen (Lokal)",
-                        on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
+                        on_click=lambda f=file_status[0], u=user_id: asyncio.create_task(download_editor(f, u)),
                     ).props("no-caps")
                     ui.button(
                         "Editor öffnen (Server)",
-                        on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
+                        on_click=lambda f=file_status[0], u=user_id: asyncio.create_task(open_editor(f, u)),
                     ).props("no-caps")
                     ui.button(
                         "SRT-Datei",
-                        on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
+                        on_click=lambda f=file_status[0], u=user_id: asyncio.create_task(download_srt(f, u)),
                     ).props("no-caps")
                     ui.button(
                         "Datei entfernen",
-                        on_click=partial(
-                            delete_file,
-                            file_name=file_status[0],
-                            user_id=user_id,
-                            refresh_file_view=refresh_file_view,
-                        ),
+                        on_click=lambda f=file_status[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
                         color="red-5",
                     ).props("no-caps")
                     any_file_ready = True
@@ -822,19 +820,14 @@ async def main_page():
                 ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
                 ui.button(
                     "Datei entfernen",
-                    on_click=partial(
-                        delete_file,
-                        file_name=file_status[0],
-                        user_id=user_id,
-                        refresh_file_view=refresh_file_view,
-                    ),
+                    on_click=lambda f=file_status[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
                     color="red-5",
                 ).props("no-caps")
                 ui.separator()
         if any_file_ready:
             ui.button(
                 "Alle Dateien herunterladen",
-                on_click=partial(download_all, user_id=user_id),
+                on_click=lambda u=user_id: asyncio.create_task(download_all(u)),
             ).props("no-caps")
 
     async def display_files(user_id):
@@ -897,9 +890,9 @@ async def main_page():
 
                 ui.label("")
                 
-                # Quick timer for checking file progress
+                # Timer for checking file progress - properly using asyncio.create_task for async listen function
                 ui.timer(
-                    5,  # Less frequent timer to reduce overhead
+                    5,  # 5-second interval to reduce overhead
                     lambda: asyncio.create_task(listen(user_id=user_id, refresh_file_view=refresh_file_view)),
                 )
                 user_storage[user_id]["language"] = ui.select(
