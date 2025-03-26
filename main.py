@@ -13,7 +13,8 @@ from dotenv import load_dotenv
 from nicegui import ui, events, app
 
 # Configure logging
-logging.basicConfig(level=logging.INFO, 
+# Set to DEBUG level to capture more detailed information
+logging.basicConfig(level=logging.DEBUG, 
                    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s')
 logger = logging.getLogger(__name__)
 
@@ -736,18 +737,59 @@ async def main_page():
 
     @ui.refreshable
     def display_queue(user_id):
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
-            if 0 <= file_status[2] < 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
+        logger.info(f"--- Attempting to display queue for user {user_id} ---")
+        try:
+            if user_id not in user_storage or "file_list" not in user_storage[user_id]:
+                logger.error(f"[{user_id}] user_storage or file_list missing for display_queue.")
+                ui.label("Error: User data not found for queue.")
+                return
+
+            # Filter for files actually in the queue state
+            files_in_queue = [
+                fs for fs in user_storage[user_id].get("file_list", [])  # Use .get for safety
+                if isinstance(fs, list) and len(fs) > 2 and 0 <= fs[2] < 100.0  # Basic validation
+            ]
+            logger.info(f"[{user_id}] Found {len(files_in_queue)} files in queue state.")
+
+            if not files_in_queue:
+                ui.label("Warteschlange ist leer.")
+                logger.info(f"[{user_id}] Queue is empty, displaying message.")
+                return  # Stop if queue is empty
+
+            # Sort and display
+            for file_status in sorted(files_in_queue, key=lambda x: (x[2], -x[4], x[0])):
+                logger.debug(f"[{user_id}] Displaying queue item: {file_status[0]}")
+
+                # Check if updates exist and apply them
+                current_update = user_storage[user_id].get("updates")
+                if current_update and isinstance(current_update, list) and len(current_update) > 0 and current_update[0] == file_status[0]:
+                    file_status_display = current_update
+                else:
+                    file_status_display = file_status
+
+                # Add more defensive checks before accessing indices
+                if not isinstance(file_status_display, list) or len(file_status_display) < 3:
+                    logger.warning(f"[{user_id}] Malformed file_status, skipping display: {file_status_display}")
+                    continue
+
+                # --- Original UI code ---
+                ui.markdown(f"<b>{file_status_display[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status_display[1]}")
                 ui.button(
                     "Abbrechen",
-                    on_click=lambda f=file_status[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
+                    on_click=lambda f=file_status_display[0], u=user_id, r=refresh_file_view: asyncio.create_task(delete_file(f, u, r)),
                     color="red-5",
                 ).props("no-caps")
-                ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
+                # Ensure progress value is valid
+                progress_value = file_status_display[2] / 100.0 if isinstance(file_status_display[2], (int, float)) and file_status_display[2] >= 0 else 0.0
+                ui.linear_progress(value=progress_value, show_value=False, size="10px").props("instant-feedback")
                 ui.separator()
+                # --- End Original UI code ---
+
+            logger.info(f"[{user_id}] Finished rendering queue items.")
+
+        except Exception as e:
+            logger.exception(f"[{user_id}] !!! ERROR INSIDE display_queue function !!!: {e}")
+            ui.label(f"Fehler beim Anzeigen der Warteschlange: {e}")
 
     @ui.refreshable
     def display_results(user_id):
@@ -832,10 +874,22 @@ async def main_page():
             ).props("no-caps")
 
     async def display_files(user_id):
-        await read_files(user_id)  # We can await this directly here
-        with ui.card().classes("border p-4").style("width: min(60vw, 700px);"):
-            display_queue(user_id=user_id)
-            display_results(user_id=user_id)
+        logger.info(f"[{user_id}] Starting display_files function")
+        try:
+            await read_files(user_id)  # We can await this directly here
+            logger.info(f"[{user_id}] Finished read_files, data should be ready")
+            
+            with ui.card().classes("border p-4").style("width: min(60vw, 700px);"):
+                logger.info(f"[{user_id}] Calling display_queue from display_files")
+                display_queue(user_id=user_id)
+                logger.info(f"[{user_id}] Returned from display_queue call")
+                
+                logger.info(f"[{user_id}] Calling display_results from display_files")
+                display_results(user_id=user_id)
+                logger.info(f"[{user_id}] Returned from display_results call")
+        except Exception as e:
+            logger.exception(f"[{user_id}] !!! ERROR IN display_files !!!: {e}")
+            ui.label(f"Fehler beim Anzeigen der Dateien: {e}")
 
     if ONLINE:
         user_id = str(app.storage.browser.get("id", ""))
