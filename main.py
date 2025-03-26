@@ -4,11 +4,36 @@ import shutil
 import zipfile
 import datetime
 import base64
+import traceback
 from os import listdir
 from os.path import isfile, join
 from functools import partial
 from dotenv import load_dotenv
 from nicegui import ui, events, app
+from datetime import datetime
+
+# Direct file logging for diagnosing freezes
+UI_DEBUG_LOG_PATH = "ui_debug.log"
+
+def ui_debug_log(message, important=False):
+    """Write directly to a file even if the container freezes"""
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(UI_DEBUG_LOG_PATH, "a") as f:
+            if important:
+                line = f"[{timestamp}] !!! CRITICAL OPERATION !!! {message}\n"
+            else:
+                line = f"[{timestamp}] {message}\n"
+            f.write(line)
+            f.flush()  # Force write to disk
+    except Exception as e:
+        # Cannot use normal logging if process is frozen
+        try:
+            with open("ui_debug_error.log", "a") as f:
+                f.write(f"Error in ui_debug_log: {str(e)}\n")
+                f.flush()
+        except:
+            pass
 
 from data.const import LANGUAGES, INVERTED_LANGUAGES
 from src.util import time_estimate
@@ -562,11 +587,20 @@ def listen(user_id, refresh_file_view):
     print(f"[DEBUG-LISTEN] Running listen check for user: {user_id}")
     t_start = time.time()
     
+    # Log directly to file in case of container freeze
+    ui_debug_log(f"Running listen check for user: {user_id}")
+    
     worker_user_dir = join(ROOT, "data", "worker", user_id)
     
     if os.path.exists(worker_user_dir):
-        worker_files = listdir(worker_user_dir)
-        print(f"[DEBUG-LISTEN] Found {len(worker_files)} worker files in {worker_user_dir}")
+        try:
+            worker_files = listdir(worker_user_dir)
+            ui_debug_log(f"Found {len(worker_files)} worker files in {worker_user_dir}")
+            print(f"[DEBUG-LISTEN] Found {len(worker_files)} worker files in {worker_user_dir}")
+        except Exception as e:
+            ui_debug_log(f"ERROR listing worker dir: {str(e)}", important=True)
+            print(f"[DEBUG-LISTEN] Error listing worker dir: {str(e)}")
+            return
         
         for f in worker_files:
             file_path = join(worker_user_dir, f)
@@ -628,39 +662,111 @@ def listen(user_id, refresh_file_view):
                 print(f"[DEBUG-LISTEN] listen() function completed in {t_end - t_start:.3f}s")
                 return
 
-        # No files being processed
+        # No files being processed - THIS IS THE CRITICAL POINT WHERE DISCONNECT HAPPENS
+        ui_debug_log("No worker files found - checking for previous updates", important=True)
         print(f"[DEBUG-LISTEN] No worker files found for processing - checking for previous updates")
+        
+        # Get system state at this critical point
+        try:
+            ui_debug_log("Getting system process information before file completion handling")
+            os.system("ps aux > ui_processes_before.txt")
+        except Exception as e:
+            ui_debug_log(f"Error getting process info: {str(e)}")
+        
+        # Try to force filesystem sync before critical operations
+        try:
+            os.sync()
+            ui_debug_log("Filesystem buffers synced before file completion handling")
+        except Exception as e:
+            ui_debug_log(f"Error syncing filesystem: {str(e)}")
+            
         if user_storage[user_id].get("updates"):
+            ui_debug_log("Updates found in user_storage - handling file completion", important=True)
+            
             # Store current file_in_progress before clearing
             previous_file = user_storage[user_id].get("file_in_progress")
+            ui_debug_log(f"Previous file in progress: {previous_file}")
             print(f"[DEBUG-LISTEN] Previous file in progress: {previous_file}")
             
-            # Clear update data
+            # Clear update data - store old value for later checking
+            old_updates = user_storage[user_id].get("updates", [])
+            old_file_in_progress = user_storage[user_id].get("file_in_progress")
+            
+            # CRITICAL OPERATION: Update user_storage
+            ui_debug_log("CRITICAL OPERATION: Updating user_storage", important=True)
+            ui_debug_log(f"Clearing updates: {old_updates}")
+            ui_debug_log(f"Clearing file_in_progress: {old_file_in_progress}")
+            
             user_storage[user_id]["updates"] = []
             user_storage[user_id]["file_in_progress"] = None
+            ui_debug_log("user_storage updates and file_in_progress cleared")
             print(f"[DEBUG-LISTEN] Cleared updates and file_in_progress")
             
             # Only perform full refresh if we actually had a file in progress
             # This reduces the likelihood of disconnections when files finish processing
             if previous_file:
+                ui_debug_log(f"File processing completed: {previous_file} - performing full refresh", important=True)
                 print(f"[DEBUG-LISTEN] File processing completed: {previous_file} - performing FULL refresh")
+                ui_debug_log("*** POTENTIALLY CRITICAL POINT - DISCONNECTIONS MAY OCCUR HERE ***", important=True)
                 print(f"[DEBUG-LISTEN] *** POTENTIALLY CRITICAL POINT - DISCONNECTIONS LIKELY HERE ***")
+                
                 # Delay refresh slightly to avoid disconnect during state transition
                 try:
+                    ui_debug_log("Adding delay before UI refresh...")
                     time.sleep(0.5)  # Small delay to let UI breathe before refresh
+                    ui_debug_log("After delay, calling refresh with refresh_results=True", important=True)
                     print(f"[DEBUG-LISTEN] After delay, calling refresh with refresh_results=True")
+                    
+                    # Get another process snapshot before the critical call
+                    try:
+                        ui_debug_log("Getting system process information before refresh call")
+                        os.system("ps aux > ui_processes_refresh.txt")
+                    except Exception as e:
+                        ui_debug_log(f"Error getting process info: {str(e)}")
+                    
+                    t_refresh_start = time.time()
                     refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
+                    t_refresh_end = time.time()
+                    refresh_duration = t_refresh_end - t_refresh_start
+                    
+                    ui_debug_log(f"Refresh completed in {refresh_duration:.6f}s", important=True)
+                    
+                    # If refresh took unusually long, log it as important
+                    if refresh_duration > 0.5:
+                        ui_debug_log(f"WARNING: UI refresh took {refresh_duration:.6f}s", important=True)
                 except Exception as e:
+                    ui_debug_log(f"ERROR during refresh after completion: {str(e)}\n{traceback.format_exc()}", important=True)
                     print(f"[DEBUG-LISTEN] Error during refresh after completion: {str(e)}")
             else:
                 # Less intensive refresh when no file was actually in progress
+                ui_debug_log("No actual file was in progress - performing lighter refresh")
                 print(f"[DEBUG-LISTEN] No actual file was in progress - lighter refresh")
+                
+                t_refresh_start = time.time()
                 refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
+                t_refresh_end = time.time()
+                ui_debug_log(f"Light refresh completed in {t_refresh_end - t_refresh_start:.6f}s")
         else:
+            ui_debug_log("No updates found - performing routine refresh")
             print(f"[DEBUG-LISTEN] No updates found - performing routine refresh")
             refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
+        
+        # Get system state after critical operations
+        try:
+            ui_debug_log("Getting system process information after completion handling")
+            os.system("ps aux > ui_processes_after.txt")
+        except Exception as e:
+            ui_debug_log(f"Error getting process info: {str(e)}")
+        
+        # Force filesystem sync at the end
+        try:
+            os.sync()
+            ui_debug_log("Final filesystem sync performed")
+        except Exception as e:
+            ui_debug_log(f"Error syncing: {str(e)}")
             
         t_end = time.time()
+        ui_debug_log(f"listen() function completed in {t_end - t_start:.3f}s")
         print(f"[DEBUG-LISTEN] listen() function completed in {t_end - t_start:.3f}s")
 
 
@@ -1047,6 +1153,16 @@ async def main_page():
 
 
 if __name__ in {"__main__", "__mp_main__"}:
+    # Clear debug log at startup
+    try:
+        with open(UI_DEBUG_LOG_PATH, "w") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] UI process started\n")
+    except Exception as e:
+        print(f"Error initializing UI debug log: {str(e)}")
+    
+    ui_debug_log("UI process initialized", important=True)
+    ui_debug_log(f"DEVICE={os.getenv('DEVICE')}, ROOT={ROOT}, ONLINE={ONLINE}")
+    
     # Create all required directories at startup
     for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
         os.makedirs(join(ROOT, directory), exist_ok=True)

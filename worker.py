@@ -8,6 +8,9 @@ import torch
 import zipfile
 import logging
 import whisperx
+import threading
+import traceback
+from datetime import datetime
 
 from os.path import isfile, join, normpath, basename, dirname
 from dotenv import load_dotenv
@@ -38,6 +41,53 @@ BATCH_SIZE = int(os.getenv("BATCH_SIZE"))
 # Set up logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# File-based direct debug logging that works even if container freezes
+DEBUG_LOG_PATH = "worker_debug.log"
+
+def debug_log(message, important=False):
+    """Write directly to a file even if the container freezes"""
+    try:
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S.%f")[:-3]
+        with open(DEBUG_LOG_PATH, "a") as f:
+            if important:
+                line = f"[{timestamp}] !!! CRITICAL OPERATION !!! {message}\n"
+            else:
+                line = f"[{timestamp}] {message}\n"
+            f.write(line)
+            f.flush()  # Force write to disk
+    except Exception as e:
+        # Cannot use logging here as it might be blocked
+        try:
+            with open("debug_error.log", "a") as f:
+                f.write(f"Error in debug_log: {str(e)}\n")
+                f.flush()
+        except:
+            pass
+            
+def measure_time(operation_name, important=False):
+    """Decorator to measure time of operations and log directly to file"""
+    def decorator(func):
+        def wrapper(*args, **kwargs):
+            debug_log(f"Starting {operation_name}", important)
+            start_time = time.time()
+            result = None
+            error = None
+            try:
+                result = func(*args, **kwargs)
+                return result
+            except Exception as e:
+                error = e
+                debug_log(f"ERROR in {operation_name}: {str(e)}\n{traceback.format_exc()}", True)
+                raise
+            finally:
+                end_time = time.time()
+                duration = end_time - start_time
+                if duration > 0.5:  # Log operations taking more than 500ms
+                    status = "completed" if error is None else "failed"
+                    debug_log(f"{operation_name} {status} in {duration:.3f}s", important or duration > 1.0)
+        return wrapper
+    return decorator
 
 if WINDOWS:
     os.environ["PATH"] += os.pathsep + "ffmpeg/bin"
@@ -102,44 +152,62 @@ def should_process_file(file_path):
             
     return True
 
+@measure_time("report_error", important=True)
 def report_error(file_name, file_name_error, user_id, text=""):
     """Report an error and move file to error directory with improved reliability."""
+    debug_log(f"Error processing file {file_name}: {text}")
     logger.error(f"Error processing file {file_name}: {text}")
     error_dir = join(ROOT, "data", "error", user_id)
     os.makedirs(error_dir, exist_ok=True)
     
     # First ensure we can create the error text file
     error_file = file_name_error + ".txt"
+    debug_log(f"Writing error file: {error_file}")
     try:
         with open(error_file, "w") as f:
             f.write(text)
         logger.info(f"Created error file: {error_file}")
+        debug_log("Error file created successfully")
     except Exception as e:
         logger.error(f"Failed to create error file {error_file}: {str(e)}")
+        debug_log(f"Failed to create error file {error_file}: {str(e)}")
         
     # Then try to move the file, using copy+delete if move fails
+    debug_log(f"Moving file to error dir: {file_name} -> {file_name_error}")
     try:
         shutil.move(file_name, file_name_error)
         logger.info(f"Moved file to error directory: {file_name} -> {file_name_error}")
+        debug_log("File moved successfully")
     except Exception as e:
         logger.error(f"Could not move file to error directory: {str(e)}")
+        debug_log(f"Move failed, trying copy+delete: {str(e)}")
         try:
             # Try copy+delete as fallback
+            debug_log(f"Copying file: {file_name} -> {file_name_error}")
             shutil.copy2(file_name, file_name_error)
             logger.info(f"Copied file to error directory: {file_name} -> {file_name_error}")
+            debug_log(f"Removing original file: {file_name}")
             os.remove(file_name)
             logger.info(f"Removed original file after copy: {file_name}")
+            debug_log("File copied and original removed successfully")
         except Exception as e2:
             logger.error(f"Failed fallback file handling: {str(e2)}")
+            debug_log(f"Copy+delete fallback failed: {str(e2)}")
             
     # Always clean up the processing marker
+    debug_log(f"Cleaning up processing marker: {file_name}.processing")
     try:
         processing_marker = file_name + ".processing"
         if os.path.exists(processing_marker):
+            debug_log(f"Removing processing marker file: {processing_marker}")
             os.remove(processing_marker)
             logger.info(f"Removed processing marker: {processing_marker}")
+            debug_log("Processing marker removed successfully")
+        else:
+            debug_log("Processing marker not found (already removed)")
     except Exception as e:
         logger.error(f"Could not remove processing marker: {str(e)}")
+        debug_log(f"Failed to remove processing marker: {str(e)}")
 
 
 def oldest_files(folder):
@@ -383,34 +451,53 @@ if __name__ == "__main__":
     logger.info(disclaimer)
     logger.info("Worker ready")
 
+    # Clear debug log at startup
+    try:
+        with open(DEBUG_LOG_PATH, "w") as f:
+            f.write(f"[{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}] Worker process started\n")
+    except Exception as e:
+        print(f"Error initializing debug log: {str(e)}")
+    
+    debug_log("Worker process initialized", important=True)
+    debug_log(f"DEVICE={DEVICE}, ROOT={ROOT}, ONLINE={ONLINE}")
+    
+    @measure_time("main_loop_iteration", important=True)
+    def process_one_iteration():
+        # Get all files in input directory
+        files_sorted_by_date = oldest_files(join(ROOT, "data", "in"))
+        
+        # Filter out non-processable files to get accurate queue size
+        actual_queue = []
+        for file_path in files_sorted_by_date:
+            file = basename(file_path)
+            user_id = normpath(dirname(file_path)).split(os.sep)[-1]
+            
+            # Skip config files
+            if file == "hotwords.txt" or file == "language.txt":
+                continue
+                
+            # Skip files that should not be processed (already processed, currently processing, etc.)
+            if not isfile(file_path) or not should_process_file(file_path):
+                continue
+                
+            # This file is in the queue
+            actual_queue.append(file_path)
+        
+        debug_log(f"Found {len(actual_queue)} files in queue")
+        logger.info(f"Found {len(actual_queue)} files in queue")
+        
+        # Track correct queue size for monitoring
+        track_queue_size(len(actual_queue))
+        
+        # Process files from the filtered queue
+        if not actual_queue:
+            return False
+            
+        return actual_queue
+    
     while True:
         try:
-            # Get all files in input directory
-            files_sorted_by_date = oldest_files(join(ROOT, "data", "in"))
-            
-            # Filter out non-processable files to get accurate queue size
-            actual_queue = []
-            for file_path in files_sorted_by_date:
-                file = basename(file_path)
-                user_id = normpath(dirname(file_path)).split(os.sep)[-1]
-                
-                # Skip config files
-                if file == "hotwords.txt" or file == "language.txt":
-                    continue
-                    
-                # Skip files that should not be processed (already processed, currently processing, etc.)
-                if not isfile(file_path) or not should_process_file(file_path):
-                    continue
-                    
-                # This file is in the queue
-                actual_queue.append(file_path)
-            
-            logger.info(f"Found {len(actual_queue)} files in queue")
-            
-            # Track correct queue size for monitoring
-            track_queue_size(len(actual_queue))
-            
-            # Process files from the filtered queue
+            actual_queue = process_one_iteration()
             if not actual_queue:
                 time.sleep(1)
                 continue
@@ -421,6 +508,7 @@ if __name__ == "__main__":
             user_id = normpath(dirname(file_name)).split(os.sep)[-1]
             
             # Mark file as processing to prevent reprocessing
+            debug_log(f"Starting to process file: {file_name}", important=True)
             logger.info(f"Starting to process file: {file_name}")
             processing_marker = mark_file_as_processing(file_name)
             
@@ -571,26 +659,94 @@ if __name__ == "__main__":
                     "Fehler beim Erstellen des Editors",
                 )
 
-            # Remove progress file - THIS IS CRITICAL - triggers UI to refresh
-            if progress_file_name and os.path.exists(progress_file_name):
-                logger.info(f"[DEBUG-WORKER] *** REMOVING PROGRESS FILE: {progress_file_name} ***")
-                logger.info(f"[DEBUG-WORKER] This removal will trigger listen() function to detect completion")
-                t_remove_start = time.time()
-                os.remove(progress_file_name)
-                t_remove_end = time.time()
-                logger.info(f"[DEBUG-WORKER] Progress file removed in {t_remove_end - t_remove_start:.3f}s")
+            # CRITICAL SECTION - These operations might be causing the freeze
+            # Using separate function with timing to isolate operations
+            @measure_time("file_completion_cleanup", important=True)
+            def cleanup_after_processing():
+                debug_log("ENTERING CRITICAL SECTION - FILE COMPLETION CLEANUP", important=True)
                 
-            # Clean up processing marker after successful completion
-            try:
-                if os.path.exists(file_name + ".processing"):
-                    logger.info(f"[DEBUG-WORKER] Removing processing marker: {file_name}.processing")
-                    os.remove(file_name + ".processing")
-                    logger.info(f"[DEBUG-WORKER] Removed processing marker after successful transcription: {file_name}")
-            except Exception as e:
-                logger.error(f"[DEBUG-WORKER] Could not remove processing marker: {str(e)}")
+                # Run a system command to get current processes
+                try:
+                    debug_log("Getting system process list before operations")
+                    os.system("ps aux > processes_before.txt")
+                except Exception as e:
+                    debug_log(f"Error getting process list: {str(e)}")
                 
-            logger.info(f"[DEBUG-WORKER] *** PROCESSING COMPLETED: {file_name} ***")
-            logger.info(f"[DEBUG-WORKER] Waiting for next file...")
+                # Perform each file operation in separate timed blocks
+                
+                # CRITICAL OPERATION 1: Remove progress file - triggers UI updates
+                if progress_file_name and os.path.exists(progress_file_name):
+                    debug_log(f"CRITICAL OPERATION 1: Removing progress file: {progress_file_name}", important=True)
+                    try:
+                        # Force OS cache flush before operations
+                        os.sync()
+                        t_remove_start = time.time()
+                        os.remove(progress_file_name)
+                        t_remove_end = time.time()
+                        removal_time = t_remove_end - t_remove_start
+                        debug_log(f"Progress file removed in {removal_time:.6f}s", important=True)
+                        
+                        # If removal took unusually long, log it as important
+                        if removal_time > 0.1:
+                            debug_log(f"WARNING: Progress file removal took {removal_time:.6f}s", important=True)
+                    except Exception as e:
+                        debug_log(f"ERROR in progress file removal: {str(e)}\n{traceback.format_exc()}", important=True)
+                else:
+                    debug_log("Progress file not found or already removed")
+                
+                # Force flush filesystem buffers again
+                try:
+                    os.sync()
+                    debug_log("Filesystem buffers synced after progress file removal")
+                except Exception as e:
+                    debug_log(f"Error syncing filesystem: {str(e)}")
+                    
+                # Small delay to let I/O operations complete
+                time.sleep(0.1)
+                debug_log("Added 100ms sleep after file operations")
+                
+                # CRITICAL OPERATION 2: Remove processing marker
+                try:
+                    processing_marker = file_name + ".processing"
+                    if os.path.exists(processing_marker):
+                        debug_log(f"CRITICAL OPERATION 2: Removing processing marker: {processing_marker}", important=True)
+                        t_marker_start = time.time()
+                        os.remove(processing_marker)
+                        t_marker_end = time.time()
+                        marker_time = t_marker_end - t_marker_start
+                        debug_log(f"Processing marker removed in {marker_time:.6f}s", important=True)
+                        
+                        # If removal took unusually long, log it as important
+                        if marker_time > 0.1:
+                            debug_log(f"WARNING: Marker removal took {marker_time:.6f}s", important=True)
+                    else:
+                        debug_log("Processing marker not found or already removed")
+                except Exception as e:
+                    debug_log(f"ERROR removing processing marker: {str(e)}\n{traceback.format_exc()}", important=True)
+                
+                # Get system state after critical operations
+                try:
+                    debug_log("Getting system process list after operations")
+                    os.system("ps aux > processes_after.txt")
+                except Exception as e:
+                    debug_log(f"Error getting process list: {str(e)}")
+                
+                # Force filesystem sync
+                try:
+                    os.sync()
+                    debug_log("Final filesystem sync performed")
+                except Exception as e:
+                    debug_log(f"Error syncing: {str(e)}")
+                
+                debug_log("EXITING CRITICAL SECTION - FILE COMPLETION CLEANUP", important=True)
+            
+            # Execute the critical cleanup section
+            cleanup_after_processing()
+            
+            # Log completion
+            debug_log(f"*** PROCESSING COMPLETED: {file_name} ***", important=True)
+            logger.info(f"*** PROCESSING COMPLETED: {file_name} ***")
+            debug_log("Waiting for next file...", important=False)
                 
             if DEVICE == "mps":
                 print("Exiting worker to prevent memory leaks with MPS...")
