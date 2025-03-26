@@ -154,128 +154,111 @@ def oldest_files(folder):
 
 
 @time_transcription
-def transcribe_file(file_name, multi_mode=False, multi_mode_track=None, audio_files=None, language="de"):
+def transcribe_file(file_name, processing_marker, num_speakers_to_pass=2, multi_mode=False, multi_mode_track=None, audio_files=None, language="de"):
     data = None
-    estimated_time = 0
-    progress_file_name = ""
 
-    # First check if the file still exists - return early if not
+    # First check if the file still exists
     if not os.path.exists(file_name):
         logger.info(f"File no longer exists, cancelling processing: {file_name}")
-        return None, estimated_time, progress_file_name
+        return None # Return None if file gone
 
     file = basename(file_name)
     user_id = normpath(dirname(file_name)).split(os.sep)[-1]
     file_name_error = join(ROOT, "data", "error", user_id, file)
     file_name_out = join(ROOT, "data", "out", user_id, file + ".mp4")
 
-    # Clean up worker directory
+    # Clean up worker directory (only needed if NOT multi_mode)
     if not multi_mode:
         worker_user_dir = join(ROOT, "data", "worker", user_id)
-        if os.path.exists(worker_user_dir):
-            try:
-                shutil.rmtree(worker_user_dir)
-            except OSError as e:
-                logger.error(f"Could not remove folder: {worker_user_dir}. Error: {e}")
+        # Only remove specific progress files if needed, or leave it
+        # if os.path.exists(worker_user_dir):
+        #     try:
+        #         shutil.rmtree(worker_user_dir) # Be careful with this
+        #     except OSError as e:
+        #         logger.error(f"Could not remove folder: {worker_user_dir}. Error: {e}")
 
-    # Create output directory
+    # Create output directory (only needed if NOT multi_mode)
     if not multi_mode:
         output_user_dir = join(ROOT, "data", "out", user_id)
         os.makedirs(output_user_dir, exist_ok=True)
 
-    # Estimate run time
-    try:
-        time.sleep(2)
-        estimated_time, run_time = time_estimate(file_name, ONLINE)
-        logger.info(f"DEBUG: Estimated transcription time: {estimated_time} seconds for file {file_name}")
-        if run_time == -1:
-            report_error(file_name, file_name_error, user_id, "Datei konnte nicht gelesen werden")
-            return data, estimated_time, progress_file_name
-    except Exception as e:
-        logger.exception("Error estimating run time")
-        report_error(file_name, file_name_error, user_id, "Datei konnte nicht gelesen werden")
-        return data, estimated_time, progress_file_name
+    # --- time_estimate call REMOVED from here ---
 
-    if not multi_mode:
-        worker_user_dir = join(ROOT, "data", "worker", user_id)
-        os.makedirs(worker_user_dir, exist_ok=True)
-        logger.info(f"DEBUG: Worker user directory created: {worker_user_dir}")
-        progress_file_name = join(worker_user_dir, f"{estimated_time}_{int(time.time())}_{file}")
-        try:
-            with open(progress_file_name, "w") as f:
-                f.write("")
-            logger.info(f"DEBUG: Successfully created progress file: {progress_file_name}")
-        except OSError as e:
-            logger.error(f"Could not create progress file: {progress_file_name}. Error: {e}")
+    track_file_processed(file_name) # Track file stats
 
-    # Track file being processed
-    track_file_processed(file_name)
-    
-    # Check if file has a valid audio stream
+    # Check audio stream validity
     try:
-        if not ffmpeg.probe(file_name, select_streams="a")["streams"]:
-            report_error(
-                file_name,
-                file_name_error,
-                user_id,
-                "Die Tonspur der Datei konnte nicht gelesen werden",
-            )
-            return data, estimated_time, progress_file_name
+        probe_info = ffmpeg.probe(file_name, select_streams="a")
+        if not probe_info or not probe_info.get("streams"):
+            report_error(file_name, file_name_error, user_id, "Keine gültige Audiospur gefunden")
+            return None # Indicate failure
     except ffmpeg.Error as e:
-        logger.exception("ffmpeg error during probing")
-        report_error(
-            file_name,
-            file_name_error,
-            user_id,
-            "Die Tonspur der Datei konnte nicht gelesen werden",
-        )
-        return data, estimated_time, progress_file_name
+        # Log stderr from ffprobe if possible
+        stderr_output = e.stderr.decode('utf-8') if e.stderr else 'No stderr'
+        logger.error(f"ffprobe error during probing {file_name}: {stderr_output}")
+        report_error(file_name, file_name_error, user_id, f"Datei konnte nicht gelesen werden (ffprobe Fehler): {stderr_output[:100]}")
+        return None # Indicate failure
+    except Exception as e:
+        logger.exception(f"Unexpected error probing {file_name}")
+        report_error(file_name, file_name_error, user_id, "Unerwarteter Fehler beim Lesen der Datei")
+        return None
 
-    # Process audio
+    # --- ffmpeg processing (keep using os.system for now) ---
+    logger.info(f"[{file}] Starting ffmpeg conversion at {time.time()}")
     if not multi_mode:
-        # Convert and filter audio
-        exit_status = os.system(
-            f'ffmpeg -y -i "{file_name}" -filter:v scale=320:-2 -af "lowpass=3000,highpass=200" "{file_name_out}"'
-        )
-        if exit_status == 256:
-            exit_status = os.system(
-                f'ffmpeg -y -i "{file_name}" -c:v copy -af "lowpass=3000,highpass=200" "{file_name_out}"'
-            )
-        if not exit_status == 0:
-            logger.exception("ffmpeg error during audio processing")
-            file_name_out = file_name  # Fallback to original file
+        # Use -loglevel error to reduce log spam, capture output if needed later
+        cmd_filter = f'ffmpeg -y -i "{file_name}" -filter:v scale=320:-2 -af "lowpass=3000,highpass=200" -loglevel error "{file_name_out}"'
+        exit_status = os.system(cmd_filter)
+        if exit_status != 0: # Check specific non-zero codes if needed
+            logger.warning(f"ffmpeg scaling+filtering failed ({exit_status}), trying copy...")
+            cmd_copy = f'ffmpeg -y -i "{file_name}" -c:v copy -af "lowpass=3000,highpass=200" -loglevel error "{file_name_out}"'
+            exit_status = os.system(cmd_copy)
 
+        if exit_status != 0:
+            logger.error(f"ffmpeg processing failed ({exit_status}) for {file_name}. Using original file for transcription.")
+            # Fallback: Try transcribing original if conversion fails, or report error
+            # For simplicity, let's report error if conversion fails critically
+            report_error(file_name, file_name_error, user_id, f"ffmpeg Verarbeitung fehlgeschlagen (Status: {exit_status})")
+            return None
+        else:
+             logger.info(f"[{file}] Finished ffmpeg conversion at {time.time()}")
     else:
-        file_name_out = file_name
+        file_name_out = file_name # Use original in multi_mode
 
     # Load hotwords
     hotwords = []
     hotwords_file = join(ROOT, "data", "in", user_id, "hotwords.txt")
     if isfile(hotwords_file):
-        with open(hotwords_file, "r") as h:
-            hotwords = h.read().splitlines()
+        try:
+            with open(hotwords_file, "r") as h:
+                hotwords = h.read().splitlines()
+        except Exception as e:
+             logger.warning(f"Could not read hotwords file {hotwords_file}: {e}")
 
     # Transcribe
+    logger.info(f"[{file}] Starting transcription call at {time.time()}")
     try:
+        # Make sure num_speaker is passed correctly here
         data = transcribe(
             file_name_out,
             pipe,
             diarize_model,
             DEVICE,
-            None,
-            add_language=(
-                False if DEVICE == "mps" else True
-            ),  # on MPS is rather slow and unreliable, but you can try with setting this to true
+            num_speakers_to_pass, # Use the estimated/provided count
+            add_language=(DEVICE != "mps"),
             hotwords=hotwords,
+            batch_size=BATCH_SIZE,
             multi_mode_track=multi_mode_track,
             language=language,
-            model=model,  # Pass the WhisperX model
+            model=model,
         )
+        logger.info(f"[{file}] Finished transcription call at {time.time()}")
     except Exception as e:
-        logger.exception("Transcription failed")
-        report_error(file_name, file_name_error, user_id, "Transkription fehlgeschlagen")
+        logger.exception(f"[{file}] Transcription failed at {time.time()}")
+        report_error(file_name, file_name_error, user_id, f"Transkription fehlgeschlagen: {type(e).__name__}")
+        data = None # Ensure data is None on failure
 
-    return data, estimated_time, progress_file_name
+    return data # Return only data
 if __name__ == "__main__":
     WHISPER_DEVICE = "cpu" if DEVICE == "mps" else DEVICE
     if WHISPER_DEVICE == "cpu":
@@ -385,51 +368,87 @@ if __name__ == "__main__":
 
     while True:
         try:
-            # Get all files in input directory
             files_sorted_by_date = oldest_files(join(ROOT, "data", "in"))
-            
-            # Filter out non-processable files to get accurate queue size
-            actual_queue = []
-            for file_path in files_sorted_by_date:
-                file = basename(file_path)
-                user_id = normpath(dirname(file_path)).split(os.sep)[-1]
-                
-                # Skip config files
-                if file == "hotwords.txt" or file == "language.txt":
-                    continue
-                    
-                # Skip files that should not be processed (already processed, currently processing, etc.)
-                if not isfile(file_path) or not should_process_file(file_path):
-                    continue
-                    
-                # This file is in the queue
-                actual_queue.append(file_path)
-            
+            actual_queue = [
+                fp for fp in files_sorted_by_date
+                if isfile(fp) and basename(fp) not in ["hotwords.txt", "language.txt"] and not fp.endswith(".processing") and should_process_file(fp)
+            ]
+
             logger.info(f"Found {len(actual_queue)} files in queue")
-            
-            # Track correct queue size for monitoring
             track_queue_size(len(actual_queue))
-            
-            # Process files from the filtered queue
+
             if not actual_queue:
                 time.sleep(1)
                 continue
-                
-            # Process the oldest file
+
             file_name = actual_queue[0]
             file = basename(file_name)
             user_id = normpath(dirname(file_name)).split(os.sep)[-1]
-            
-            # Mark file as processing to prevent reprocessing
+            file_name_error = join(ROOT, "data", "error", user_id, file) # Define error path early
+
             logger.info(f"Starting to process file: {file_name}")
             processing_marker = mark_file_as_processing(file_name)
-            
+            if not processing_marker:
+                logger.error(f"Failed to mark {file_name} as processing, skipping.")
+                time.sleep(1) # Avoid busy-loop if marking fails repeatedly
+                continue
+
             language_file = join(ROOT, "data", "in", user_id, "language.txt")
+            language = "de" # Default
             if isfile(language_file):
-                with open(language_file, "r") as h:
-                    language = h.read()
-            else:
-                language = "de"
+                try:
+                    with open(language_file, "r") as h:
+                        language = h.read().strip() or "de"
+                except Exception as e:
+                     logger.warning(f"Could not read language file {language_file}: {e}")
+
+            # --- Estimate time asynchronously BEFORE calling transcribe_file ---
+            estimated_time = 60 # Default estimate
+            run_time = -1
+            num_speakers_to_pass = 2 # Default speaker count
+            try:
+                logger.info(f"[{file}] Estimating time...")
+                # Run the async function from the sync loop
+                estimate_result = asyncio.run(time_estimate(file_name, ONLINE))
+                estimated_time, run_time = estimate_result
+                if run_time == -1:
+                    raise ValueError("get_length failed inside time_estimate")
+                logger.info(f"[{file}] Estimated time: {estimated_time:.2f}s, Run time: {run_time:.2f}s")
+
+                # --- Also estimate speakers here ---
+                logger.info(f"[{file}] Estimating speakers...")
+                try:
+                    temp_audio_data = {
+                         "waveform": torch.from_numpy(whisperx.load_audio(file_name, 16000)[None, :]),
+                         "sample_rate": 16000,
+                    }
+                    # Run diarization without specifying num_speakers to let it estimate
+                    temp_segments = diarize_model(temp_audio_data)
+                    estimated_speakers = len(set(s.split('_')[-1] for _, _, s in temp_segments.itertracks(yield_label=True)))
+                    num_speakers_to_pass = max(1, estimated_speakers) # Ensure at least 1
+                    logger.info(f"[{file}] Estimated {num_speakers_to_pass} speakers.")
+                except Exception as est_spk_e:
+                     logger.warning(f"Could not estimate speaker count for {file_name}, falling back to 2: {est_spk_e}")
+                     num_speakers_to_pass = 2 # Use default
+
+            except Exception as est_e:
+                 logger.exception(f"[{file}] Error during pre-processing (estimate/speakers), reporting error.")
+                 report_error(file_name, file_name_error, user_id, f"Datei konnte nicht gelesen werden (Vorverarbeitung fehlgeschlagen): {est_e}")
+                 if processing_marker and os.path.exists(processing_marker):
+                     try: os.remove(processing_marker)
+                     except OSError: pass
+                 continue # Skip to next file
+
+            # --- Create progress file using the calculated estimate ---
+            worker_user_dir = join(ROOT, "data", "worker", user_id)
+            os.makedirs(worker_user_dir, exist_ok=True) # Ensure it exists
+            progress_file_name = join(worker_user_dir, f"{estimated_time:.2f}_{int(time.time())}_{file}") # Use estimated time
+            try:
+                with open(progress_file_name, "w") as f: f.write("")
+                logger.info(f"Created progress file: {progress_file_name}")
+            except OSError as e:
+                 logger.error(f"Could not create progress file {progress_file_name}: {e}")
+                 progress_file_name = "" # Handle failure case
 
             # Check if it's a zip file
             if file_name.lower().endswith(".zip"):
@@ -452,7 +471,9 @@ if __name__ == "__main__":
                         audio_files = [fn for fn in filenames if fnmatch.fnmatch(fn, "*.*")]
                         for filename in audio_files:
                             file_path = join(root, filename)
-                            est_time_part, _ = time_estimate(file_path, ONLINE)
+                            # Use asyncio.run to call the async time_estimate function
+                            est_result = asyncio.run(time_estimate(file_path, ONLINE))
+                            est_time_part, _ = est_result
                             estimated_time += est_time_part
 
                     progress_file_name = join(
@@ -471,7 +492,16 @@ if __name__ == "__main__":
                     for track, filename in enumerate(audio_files):
                         file_path = join(root, filename)
                         file_parts.append(f'-i "{file_path}"')
-                        data_part, _, _ = transcribe_file(file_path, multi_mode=True, multi_mode_track=track, language=language)
+                        # Create a temporary processing marker for the ZIP component file
+                        temp_marker = mark_file_as_processing(file_path)
+                        data_part = transcribe_file(
+                            file_path, 
+                            temp_marker,
+                            num_speakers_to_pass=num_speakers_to_pass,
+                            multi_mode=True, 
+                            multi_mode_track=track, 
+                            language=language
+                        )
                         data_parts.append(data_part)
 
                     # Merge data
@@ -518,7 +548,12 @@ if __name__ == "__main__":
                     continue
             else:
                 # Single file transcription
-                data, estimated_time, progress_file_name = transcribe_file(file_name, language=language)
+                data = transcribe_file(
+                    file_name,
+                    processing_marker, # Pass marker path for cleanup inside on error
+                    num_speakers_to_pass=num_speakers_to_pass, # Pass speaker count
+                    language=language
+                )
 
             if data is None:
                 continue
