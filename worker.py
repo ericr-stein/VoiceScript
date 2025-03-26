@@ -533,25 +533,37 @@ if __name__ == "__main__":
             # Generate outputs
             try:
                 file_name_out = join(ROOT, "data", "out", user_id, file + ".mp4")
+                logger.info(f"[DEBUG-WORKER] Generating outputs for {file}")
                 
                 # Track audio duration for completed transcriptions
                 if data and len(data) > 0:
                     audio_duration = data[-1].get("end", 0)  # Get duration from last segment end time
                     track_audio_duration(audio_duration)
+                    logger.info(f"[DEBUG-WORKER] Audio duration: {audio_duration}s")
 
+                logger.info(f"[DEBUG-WORKER] Creating SRT for {file}")
                 srt = create_srt(data)
+                
+                logger.info(f"[DEBUG-WORKER] Creating viewer HTML for {file}")
+                t_viewer_start = time.time()
                 viewer = create_viewer(data, file_name_out, True, False, ROOT, language)
+                t_viewer_end = time.time()
+                logger.info(f"[DEBUG-WORKER] Created viewer in {t_viewer_end - t_viewer_start:.3f}s")
 
                 file_name_srt = join(ROOT, "data", "out", user_id, file + ".srt")
                 file_name_viewer = join(ROOT, "data", "out", user_id, file + ".html")
+                
+                logger.info(f"[DEBUG-WORKER] Writing viewer HTML file: {file_name_viewer}")
                 with open(file_name_viewer, "w", encoding="utf-8") as f:
                     f.write(viewer)
+                
+                logger.info(f"[DEBUG-WORKER] Writing SRT file: {file_name_srt}")
                 with open(file_name_srt, "w", encoding="utf-8") as f:
                     f.write(srt)
 
-                logger.info(f"Estimated Time: {estimated_time}")
+                logger.info(f"[DEBUG-WORKER] Estimated Time: {estimated_time}")
             except Exception as e:
-                logger.exception("Error creating editor")
+                logger.exception("[DEBUG-WORKER] Error creating editor")
                 report_error(
                     file_name,
                     join(ROOT, "data", "error", user_id, file),
@@ -559,18 +571,26 @@ if __name__ == "__main__":
                     "Fehler beim Erstellen des Editors",
                 )
 
+            # Remove progress file - THIS IS CRITICAL - triggers UI to refresh
             if progress_file_name and os.path.exists(progress_file_name):
+                logger.info(f"[DEBUG-WORKER] *** REMOVING PROGRESS FILE: {progress_file_name} ***")
+                logger.info(f"[DEBUG-WORKER] This removal will trigger listen() function to detect completion")
+                t_remove_start = time.time()
                 os.remove(progress_file_name)
+                t_remove_end = time.time()
+                logger.info(f"[DEBUG-WORKER] Progress file removed in {t_remove_end - t_remove_start:.3f}s")
                 
             # Clean up processing marker after successful completion
             try:
                 if os.path.exists(file_name + ".processing"):
+                    logger.info(f"[DEBUG-WORKER] Removing processing marker: {file_name}.processing")
                     os.remove(file_name + ".processing")
-                    logger.info(f"Removed processing marker after successful transcription: {file_name}")
+                    logger.info(f"[DEBUG-WORKER] Removed processing marker after successful transcription: {file_name}")
             except Exception as e:
-                logger.error(f"Could not remove processing marker: {str(e)}")
+                logger.error(f"[DEBUG-WORKER] Could not remove processing marker: {str(e)}")
                 
-            logger.info(f"Successfully processed file: {file_name}")
+            logger.info(f"[DEBUG-WORKER] *** PROCESSING COMPLETED: {file_name} ***")
+            logger.info(f"[DEBUG-WORKER] Waiting for next file...")
                 
             if DEVICE == "mps":
                 print("Exiting worker to prevent memory leaks with MPS...")

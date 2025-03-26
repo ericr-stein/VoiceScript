@@ -559,17 +559,23 @@ def delete_file(file_name, user_id, refresh_file_view):
 
 def listen(user_id, refresh_file_view):
     """Periodically check if a file is being transcribed and calculate its estimated progress."""
+    print(f"[DEBUG-LISTEN] Running listen check for user: {user_id}")
+    t_start = time.time()
+    
     worker_user_dir = join(ROOT, "data", "worker", user_id)
     
     if os.path.exists(worker_user_dir):
         worker_files = listdir(worker_user_dir)
+        print(f"[DEBUG-LISTEN] Found {len(worker_files)} worker files in {worker_user_dir}")
         
         for f in worker_files:
             file_path = join(worker_user_dir, f)
+            print(f"[DEBUG-LISTEN] Checking worker file: {f}")
             
             if isfile(file_path):
                 parts = f.split("_")
                 if len(parts) < 3:
+                    print(f"[DEBUG-LISTEN] Skipping invalid worker file format: {f}")
                     continue
                     
                 estimated_time = float(parts[0])
@@ -577,14 +583,17 @@ def listen(user_id, refresh_file_view):
                 file_name = "_".join(parts[2:])
                 progress = min(0.975, (time.time() - start) / estimated_time)
                 estimated_time_left = round(max(1, estimated_time - (time.time() - start)))
+                print(f"[DEBUG-LISTEN] Processing file {file_name}, progress: {progress*100:.1f}%, time left: {estimated_time_left}s")
 
                 in_file = join(ROOT, "data", "in", user_id, file_name)
                 if os.path.exists(in_file):
                     # Show different message for post-processing phase vs normal transcription
                     if progress > 0.95:
                         status_message = f"Position 1/1 in der Warteschlange. Datei wird nachbearbeitet... (SRT-Datei wird erzeugt, Editor wird erstellt)"
+                        print(f"[DEBUG-LISTEN] File {file_name} in post-processing phase")
                     else:
                         status_message = f"Position 1/1 in der Warteschlange. Datei wird transkribiert. Geschätzte Bearbeitungszeit: {datetime.timedelta(seconds=estimated_time_left)}"
+                        print(f"[DEBUG-LISTEN] File {file_name} in transcription phase")
                     
                     user_storage[user_id]["updates"] = [
                         file_name,
@@ -602,36 +611,57 @@ def listen(user_id, refresh_file_view):
                             updated = True
                             break
                 else:
+                    print(f"[DEBUG-LISTEN] Input file no longer exists, removing worker file: {file_path}")
                     os.remove(file_path)
-                    
+                
+                should_refresh_results = (user_storage[user_id].get("file_in_progress") != file_name)
+                print(f"[DEBUG-LISTEN] Calling refresh_file_view with refresh_results={should_refresh_results}")
                 refresh_file_view(
                     user_id=user_id,
                     refresh_queue=True,
-                    refresh_results=(user_storage[user_id].get("file_in_progress") != file_name),
+                    refresh_results=should_refresh_results,
                 )
                 user_storage[user_id]["file_in_progress"] = file_name
+                print(f"[DEBUG-LISTEN] Updated file_in_progress to: {file_name}")
+                
+                t_end = time.time()
+                print(f"[DEBUG-LISTEN] listen() function completed in {t_end - t_start:.3f}s")
                 return
 
         # No files being processed
+        print(f"[DEBUG-LISTEN] No worker files found for processing - checking for previous updates")
         if user_storage[user_id].get("updates"):
             # Store current file_in_progress before clearing
             previous_file = user_storage[user_id].get("file_in_progress")
+            print(f"[DEBUG-LISTEN] Previous file in progress: {previous_file}")
             
             # Clear update data
             user_storage[user_id]["updates"] = []
             user_storage[user_id]["file_in_progress"] = None
+            print(f"[DEBUG-LISTEN] Cleared updates and file_in_progress")
             
             # Only perform full refresh if we actually had a file in progress
             # This reduces the likelihood of disconnections when files finish processing
             if previous_file:
-                print(f"File processing completed: {previous_file}")
-                # Use a more controlled refresh to avoid UI disconnection
-                refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
+                print(f"[DEBUG-LISTEN] File processing completed: {previous_file} - performing FULL refresh")
+                print(f"[DEBUG-LISTEN] *** POTENTIALLY CRITICAL POINT - DISCONNECTIONS LIKELY HERE ***")
+                # Delay refresh slightly to avoid disconnect during state transition
+                try:
+                    time.sleep(0.5)  # Small delay to let UI breathe before refresh
+                    print(f"[DEBUG-LISTEN] After delay, calling refresh with refresh_results=True")
+                    refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=True)
+                except Exception as e:
+                    print(f"[DEBUG-LISTEN] Error during refresh after completion: {str(e)}")
             else:
                 # Less intensive refresh when no file was actually in progress
+                print(f"[DEBUG-LISTEN] No actual file was in progress - lighter refresh")
                 refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
         else:
+            print(f"[DEBUG-LISTEN] No updates found - performing routine refresh")
             refresh_file_view(user_id=user_id, refresh_queue=True, refresh_results=False)
+            
+        t_end = time.time()
+        print(f"[DEBUG-LISTEN] listen() function completed in {t_end - t_start:.3f}s")
 
 
 def update_hotwords(user_id):
@@ -1027,6 +1057,14 @@ if __name__ in {"__main__", "__mp_main__"}:
             title="TranscriboZH",
             storage_secret=STORAGE_SECRET,
             favicon=join(ROOT, "data", "logo.png"),
+            
+            # Debugging options for WebSocket connections
+            show_server_exceptions=True,  # Show exceptions in browser
+            reconnect_timeout=60,         # Increase reconnect timeout from default (15s)
+            close_timeout=30,             # Increase close timeout for cleaner disconnects
+            heartbeat=5,                  # More frequent heartbeats (5s instead of default)
+            socket_ping_interval=5,       # Keep connection alive with frequent pings
+            socket_ping_timeout=10,       # More time to respond to pings
         )
 
         # run command with ssl certificate
@@ -1038,4 +1076,12 @@ if __name__ in {"__main__", "__mp_main__"}:
             port=8080,
             storage_secret=STORAGE_SECRET,
             favicon=join(ROOT, "data", "logo.png"),
+            
+            # Debugging options for WebSocket connections
+            show_server_exceptions=True,  # Show exceptions in browser
+            reconnect_timeout=60,         # Increase reconnect timeout from default (15s)
+            close_timeout=30,             # Increase close timeout for cleaner disconnects
+            heartbeat=5,                  # More frequent heartbeats (5s instead of default)
+            socket_ping_interval=5,       # Keep connection alive with frequent pings
+            socket_ping_timeout=10,       # More time to respond to pings
         )
