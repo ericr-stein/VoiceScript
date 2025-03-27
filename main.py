@@ -58,10 +58,8 @@ def read_files(user_id):
                     file_status[2] = 100.0
                     file_status[3] = 0
                 else:
-                    estimated_time, _ = time_estimate(join(in_path, f), ONLINE)
-                    if estimated_time == -1:
-                        estimated_time = 0
-                    file_status[3] = estimated_time
+                    # Don't estimate time yet, just use 0 as default
+                    file_status[3] = 0
 
                 user_storage[user_id]["file_list"].append(file_status)
 
@@ -79,6 +77,22 @@ def read_files(user_id):
 
         # Sort the queue by modification time (older files first)
         sorted_queue = sorted(files_in_queue, key=lambda x: x[4])
+        
+        # Second pass: Calculate time estimates ONLY for the first 10 files in queue
+        for i, file_status in enumerate(sorted_queue[:10]):
+            # Get user_id and filename for this queue entry
+            for u in user_storage:
+                for idx, f in enumerate(user_storage[u].get("file_list", [])):
+                    if f[0] == file_status[0] and f[2] < 100.0:
+                        # Found the file - calculate estimate
+                        file_path = join(ROOT, "data", "in", u, f[0])
+                        estimated_time, _ = time_estimate(file_path, ONLINE)
+                        if estimated_time == -1:
+                            estimated_time = 0
+                        # Update both places where we store this info
+                        sorted_queue[i][3] = estimated_time
+                        user_storage[u]["file_list"][idx][3] = estimated_time
+                        break
 
         for file_status in user_storage[user_id]["file_list"]:
             if file_status[2] < 100.0:
