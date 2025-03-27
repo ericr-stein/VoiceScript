@@ -106,12 +106,15 @@ def read_files(user_id):
                 # Get total queue size
                 queue_size = len(sorted_queue)
                 
-                # Calculate estimated wait time
-                estimated_wait_time = sum(f[3] for f in files_in_queue if f[4] < file_status[4])
-                wait_time_str = str(datetime.timedelta(seconds=round(estimated_wait_time + file_status[3])))
-                
-                # Update status message with position
-                file_status[1] = f"Position {queue_position}/{queue_size} in der Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
+                # Only show wait time for files in the first 10 positions
+                if queue_position <= 10:
+                    # Calculate estimated wait time for files in first 10 positions
+                    estimated_wait_time = sum(f[3] for f in files_in_queue if f[4] < file_status[4])
+                    wait_time_str = str(datetime.timedelta(seconds=round(estimated_wait_time + file_status[3])))
+                    file_status[1] = f"Position {queue_position}/{queue_size} in der Warteschlange. Geschätzte Wartezeit: {wait_time_str}"
+                else:
+                    # For positions >10: only show position, no wait time
+                    file_status[1] = f"Position {queue_position}/{queue_size} in der Warteschlange."
 
     if os.path.exists(error_path):
         for f in listdir(error_path):
