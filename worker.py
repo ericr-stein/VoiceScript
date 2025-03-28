@@ -8,10 +8,12 @@ import torch
 import zipfile
 import logging
 import whisperx
+import subprocess
 
 from os.path import isfile, join, normpath, basename, dirname
 from dotenv import load_dotenv
 from pyannote.audio import Pipeline
+from src.security import is_safe_zip
 from src.metrics import (
     initialize_metrics, track_file_processed, track_queue_size,
     track_transcription_error, track_audio_duration, time_transcription
@@ -233,16 +235,46 @@ def transcribe_file(file_name, multi_mode=False, multi_mode_track=None, audio_fi
 
     # Process audio
     if not multi_mode:
-        # Convert and filter audio
-        exit_status = os.system(
-            f'ffmpeg -y -i "{file_name}" -filter:v scale=320:-2 -af "lowpass=3000,highpass=200" "{file_name_out}"'
-        )
-        if exit_status == 256:
-            exit_status = os.system(
-                f'ffmpeg -y -i "{file_name}" -c:v copy -af "lowpass=3000,highpass=200" "{file_name_out}"'
+        # Convert and filter audio using safer subprocess.run
+        try:
+            # First attempt with scale filter
+            result = subprocess.run(
+                [
+                    'ffmpeg',
+                    '-y',
+                    '-i', file_name,
+                    '-filter:v', 'scale=320:-2',
+                    '-af', 'lowpass=3000,highpass=200',
+                    file_name_out
+                ],
+                check=False,
+                capture_output=True,
+                text=True
             )
-        if not exit_status == 0:
-            logger.exception("ffmpeg error during audio processing")
+            
+            # If first attempt fails, try with codec copy
+            if result.returncode != 0:
+                logger.info(f"First ffmpeg attempt failed, trying with codec copy: {result.stderr}")
+                result = subprocess.run(
+                    [
+                        'ffmpeg',
+                        '-y',
+                        '-i', file_name,
+                        '-c:v', 'copy',
+                        '-af', 'lowpass=3000,highpass=200',
+                        file_name_out
+                    ],
+                    check=False,
+                    capture_output=True,
+                    text=True
+                )
+                
+            # Check final result
+            if result.returncode != 0:
+                logger.error(f"ffmpeg error during audio processing: {result.stderr}")
+                file_name_out = file_name  # Fallback to original file
+        except Exception as e:
+            logger.exception(f"Error executing ffmpeg: {str(e)}")
             file_name_out = file_name  # Fallback to original file
 
     else:
@@ -434,11 +466,26 @@ if __name__ == "__main__":
             # Check if it's a zip file
             if file_name.lower().endswith(".zip"):
                 try:
+                    # Check if the zip file appears safe before extracting
+                    if not is_safe_zip(file_name, max_size_ratio=100, max_files=1000):
+                        logger.error(f"Potentially unsafe zip file detected: {file_name}")
+                        report_error(
+                            file_name,
+                            join(ROOT, "data", "error", user_id, file),
+                            user_id,
+                            "Unsichere ZIP-Datei erkannt. Datei konnte nicht verarbeitet werden."
+                        )
+                        continue
+                        
                     zip_extract_dir = join(ROOT, "data", "worker", "zip")
                     shutil.rmtree(zip_extract_dir, ignore_errors=True)
                     os.makedirs(zip_extract_dir, exist_ok=True)
 
                     with zipfile.ZipFile(file_name, "r") as zip_ref:
+                        # Additional verification before extraction
+                        total_size = sum(info.file_size for info in zip_ref.infolist())
+                        logger.info(f"Extracting zip with {len(zip_ref.infolist())} files, total uncompressed size: {total_size/1024/1024:.2f} MB")
+                        
                         zip_ref.extractall(zip_extract_dir)
 
                     multi_mode = True
@@ -487,23 +534,73 @@ if __name__ == "__main__":
                         data.append(earliest[1])
                         data_parts[earliest[0]].pop(0)
 
-                    # Merge audio files
+                    # Merge audio files - restructuring to use safer subprocess.run
                     output_audio = join(ROOT, "data", "worker", "zip", "tmp.mp4")
-                    ffmpeg_input = " ".join(file_parts)
-                    ffmpeg_cmd = f'ffmpeg {ffmpeg_input} -filter_complex amix=inputs={len(file_parts)}:duration=first "{output_audio}"'
-                    os.system(ffmpeg_cmd)
-
-                    # Process merged audio
-                    file_name_out = join(ROOT, "data", "out", user_id, file + ".mp4")
-                    exit_status = os.system(
-                        f'ffmpeg -y -i "{output_audio}" -filter:v scale=320:-2 -af "lowpass=3000,highpass=200" "{file_name_out}"'
-                    )
-                    if exit_status == 256:
-                        exit_status = os.system(
-                            f'ffmpeg -y -i "{output_audio}" -c:v copy -af "lowpass=3000,highpass=200" "{file_name_out}"'
+                    
+                    # Create the subprocess command safely
+                    cmd = ['ffmpeg']
+                    for file_path in [join(root, filename) for filename in audio_files]:
+                        cmd.extend(['-i', file_path])
+                    
+                    # Add the filter and output
+                    cmd.extend([
+                        '-filter_complex', f'amix=inputs={len(audio_files)}:duration=first',
+                        output_audio
+                    ])
+                    
+                    try:
+                        # Execute merge command
+                        merge_result = subprocess.run(
+                            cmd,
+                            check=False,
+                            capture_output=True,
+                            text=True
                         )
-                    if not exit_status == 0:
-                        logger.exception("ffmpeg error during audio processing")
+                        
+                        if merge_result.returncode != 0:
+                            logger.error(f"Error merging audio files: {merge_result.stderr}")
+                        
+                        # Process merged audio
+                        file_name_out = join(ROOT, "data", "out", user_id, file + ".mp4")
+                        
+                        # First attempt with scale filter
+                        process_result = subprocess.run(
+                            [
+                                'ffmpeg',
+                                '-y',
+                                '-i', output_audio,
+                                '-filter:v', 'scale=320:-2',
+                                '-af', 'lowpass=3000,highpass=200',
+                                file_name_out
+                            ],
+                            check=False,
+                            capture_output=True,
+                            text=True
+                        )
+                        
+                        # If first attempt fails, try with codec copy
+                        if process_result.returncode != 0:
+                            logger.info(f"First processing attempt failed, trying with codec copy: {process_result.stderr}")
+                            process_result = subprocess.run(
+                                [
+                                    'ffmpeg',
+                                    '-y',
+                                    '-i', output_audio,
+                                    '-c:v', 'copy',
+                                    '-af', 'lowpass=3000,highpass=200',
+                                    file_name_out
+                                ],
+                                check=False,
+                                capture_output=True,
+                                text=True
+                            )
+                        
+                        # Check final result
+                        if process_result.returncode != 0:
+                            logger.error(f"ffmpeg error processing merged audio: {process_result.stderr}")
+                            file_name_out = output_audio  # Fallback to original file
+                    except Exception as e:
+                        logger.exception(f"Error executing ffmpeg for zip processing: {str(e)}")
                         file_name_out = output_audio  # Fallback to original file
 
                     shutil.rmtree(zip_extract_dir, ignore_errors=True)

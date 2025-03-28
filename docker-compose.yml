@@ -17,7 +17,7 @@ services:
       - "traefik.enable=true"
       
       # Router configuration
-      - "traefik.http.routers.audiotranscription.rule=Host(`sp000200-t2.kt.ktzh.ch`) && PathPrefix(`/`)"
+      - "traefik.http.routers.audiotranscription.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/`)"
       - "traefik.http.routers.audiotranscription.entrypoints=websecure"
       - "traefik.http.routers.audiotranscription.middlewares=audiotranscription-auth"
       - "traefik.http.routers.audiotranscription.tls=true"
@@ -54,7 +54,7 @@ services:
       - traefik_network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.prometheus.rule=Host(`sp000200-t2.kt.ktzh.ch`) && PathPrefix(`/prometheus`)"
+      - "traefik.http.routers.prometheus.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/prometheus`)"
       - "traefik.http.routers.prometheus.entrypoints=websecure"
       - "traefik.http.routers.prometheus.middlewares=prometheus-strip,audiotranscription-auth"
       - "traefik.http.routers.prometheus.tls=true"
@@ -84,7 +84,7 @@ services:
       - traefik_network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`sp000200-t2.kt.ktzh.ch`) && PathPrefix(`/grafana`)"
+      - "traefik.http.routers.grafana.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/grafana`)"
       - "traefik.http.routers.grafana.entrypoints=websecure"
       - "traefik.http.routers.grafana.middlewares=grafana-strip,audiotranscription-auth"
       - "traefik.http.routers.grafana.tls=true"

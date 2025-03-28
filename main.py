@@ -9,6 +9,12 @@ from os.path import isfile, join
 from functools import partial
 from dotenv import load_dotenv
 from nicegui import ui, events, app
+from fastapi import HTTPException
+from fastapi.responses import FileResponse
+from src.security import (
+    get_secure_user_id, configure_security_middleware, get_cookie_options,
+    sanitize_filename, safe_path, generate_download_token, validate_download_token
+)
 
 from data.const import LANGUAGES, INVERTED_LANGUAGES
 from src.util import time_estimate
@@ -143,7 +149,13 @@ async def handle_upload(e: events.UploadEventArguments, user_id):
     os.makedirs(in_path, exist_ok=True)
     os.makedirs(out_path, exist_ok=True)
 
-    file_name = e.name
+    # Sanitize the filename to prevent path traversal and other issues
+    original_name = e.name
+    file_name = sanitize_filename(original_name)
+    
+    # Log if sanitization changed the filename
+    if file_name != original_name:
+        print(f"Sanitized filename from '{original_name}' to '{file_name}'")
 
     # Clean up error files if re-uploading
     if os.path.exists(error_path):
@@ -260,8 +272,27 @@ setTimeout(function() {{
         f.write(content)
 
 
+# Secure download endpoint
+@app.server.app.get("/secure-download/{token}")
+async def secure_download_endpoint(token: str):
+    """Handle secure downloads with token validation"""
+    # Validate the download token
+    file_path = validate_download_token(token)
+    if not file_path or not os.path.exists(file_path):
+        print(f"Invalid download request: {token}")
+        raise HTTPException(status_code=404, detail="File not found or invalid token")
+    
+    # Return the file for download
+    filename = os.path.basename(file_path)
+    print(f"Serving download: {filename}")
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type="application/octet-stream"
+    )
+
 async def download_editor(file_name, user_id):
-    """Simplified download function using direct src parameter."""
+    """Secure download function using token-based access"""
     try:
         # Ensure output directory exists
         out_user_dir = join(ROOT, "data", "out", user_id)
@@ -301,12 +332,15 @@ async def download_editor(file_name, user_id):
             ui.notify(error_msg, color="negative")
             return
             
-        # Use direct src parameter instead of content - more reliable approach for this app
+        # Generate a secure download token
+        download_token = generate_download_token(final_file_name, user_id)
+        
+        # Create the secure download URL
+        download_url = f"/secure-download/{download_token}"
         download_filename = f"{os.path.splitext(file_name)[0]}.html"
-        ui.download(
-            src=final_file_name,  # Direct source path instead of loading content
-            filename=download_filename
-        )
+        
+        # Redirect to the download URL
+        ui.download(download_url, filename=download_filename)
         
         # Success notification
         success_msg = f"Download started: {download_filename}"
@@ -546,7 +580,7 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
 
         ui.notify("Änderungen gespeichert.")
 
-    user_id = str(app.storage.browser.get("id", "local")) if ONLINE else "local"
+    user_id = get_secure_user_id(STORAGE_SECRET, ONLINE)
 
     out_user_dir = join(ROOT, "data", "out", user_id)
     app.add_media_files(f"/data/{user_id}", out_user_dir)
@@ -769,7 +803,7 @@ async def main_page():
             display_results(user_id=user_id)
 
     if ONLINE:
-        user_id = str(app.storage.browser.get("id", ""))
+        user_id = get_secure_user_id(STORAGE_SECRET, ONLINE)
     else:
         user_id = "local"
 
@@ -866,16 +900,46 @@ if __name__ in {"__main__", "__mp_main__"}:
     for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
         os.makedirs(join(ROOT, directory), exist_ok=True)
     
+    # Configure security middleware
+    ssl_enabled = ONLINE and SSL_CERTFILE and SSL_KEYFILE
+    
+    # Add security middleware to the underlying FastAPI app
+    @app.server.app.middleware('http')
+    async def security_headers_middleware(request, call_next):
+        response = await call_next(request)
+        # Add security headers
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        
+        # Cookie security (when using HTTPS)
+        if ssl_enabled:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        
+        return response
+    
+    # Configure cookie options
+    cookie_options = {
+        "httponly": True,  # Prevents JavaScript access to cookies
+        "samesite": "Strict",  # Prevents CSRF attacks
+    }
+    
+    # Add secure flag when using HTTPS
+    if ssl_enabled:
+        cookie_options["secure"] = True
+    
     if ONLINE:
+        # Configure UI with security options
         ui.run(
             port=8080,
             title="TranscriboZH",
             storage_secret=STORAGE_SECRET,
             favicon=join(ROOT, "data", "logo.png"),
+            cookie_options=cookie_options
         )
 
         # run command with ssl certificate
-        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png")
+        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png", cookie_options=cookie_options)
     else:
         ui.run(
             title="Transcribo",
@@ -883,4 +947,5 @@ if __name__ in {"__main__", "__mp_main__"}:
             port=8080,
             storage_secret=STORAGE_SECRET,
             favicon=join(ROOT, "data", "logo.png"),
+            cookie_options=cookie_options
         )
