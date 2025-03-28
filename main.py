@@ -200,8 +200,20 @@ async def handle_upload(e: events.UploadEventArguments, user_id):
             f.write("de")
 
     # Save the uploaded file
-    with open(join(in_path, file_name), "wb") as f:
+    temp_path = join(in_path, f"temp_{file_name}")
+    with open(temp_path, "wb") as f:
         f.write(e.content.read())
+    
+    # Check if the file is a ZIP and verify it's safe
+    if file_name.lower().endswith('.zip'):
+        if not is_safe_zip(temp_path):
+            os.remove(temp_path)
+            ui.notify("Unsichere ZIP-Datei wurde abgelehnt (mögliche ZIP-Bombe oder verdächtige Dateien erkannt).", 
+                      color="negative", timeout=5000)
+            return
+    
+    # Move to final destination after security checks
+    os.rename(temp_path, join(in_path, file_name))
 
 
 def handle_reject(e: events.GenericEventArguments):
@@ -920,24 +932,26 @@ if __name__ in {"__main__", "__mp_main__"}:
     if ssl_enabled:
         cookie_options["secure"] = True
     
+    # NOTE: Cookie security flags (HttpOnly, Secure, SameSite) should be configured in Traefik:
+    # - Add a middleware in docker-compose.yml for setting cookie attributes
+    # - Example: "traefik.http.middlewares.secure-cookies.headers.customresponseheaders.Set-Cookie=SameSite=Strict; Secure; HttpOnly"
+    
     if ONLINE:
-        # Configure UI with security options
+        # Configure UI with security options (storage_secret provides cookie signing)
         ui.run(
             port=8080,
             title="TranscriboZH",
             storage_secret=STORAGE_SECRET,
-            favicon=join(ROOT, "data", "logo.png"),
-            cookie_options=cookie_options
+            favicon=join(ROOT, "data", "logo.png")
         )
 
         # run command with ssl certificate
-        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png", cookie_options=cookie_options)
+        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png")
     else:
         ui.run(
             title="Transcribo",
             host="127.0.0.1",
             port=8080,
             storage_secret=STORAGE_SECRET,
-            favicon=join(ROOT, "data", "logo.png"),
-            cookie_options=cookie_options
+            favicon=join(ROOT, "data", "logo.png")
         )

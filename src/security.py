@@ -358,7 +358,7 @@ def validate_download_token(token: str) -> Optional[str]:
 
 def is_safe_zip(zip_path: str, max_size_ratio: int = 100, max_files: int = 1000) -> bool:
     """
-    Check if a zip file is safe to extract
+    Check if a zip file is safe to extract (not a zip bomb)
     
     Args:
         zip_path: Path to the zip file
@@ -372,6 +372,7 @@ def is_safe_zip(zip_path: str, max_size_ratio: int = 100, max_files: int = 1000)
         # Get compressed file size
         compressed_size = os.path.getsize(zip_path)
         if compressed_size == 0:
+            print(f"Zero-sized zip file: {zip_path}")
             return False
             
         # Open the zip file
@@ -384,12 +385,17 @@ def is_safe_zip(zip_path: str, max_size_ratio: int = 100, max_files: int = 1000)
                 file_count += 1
                 uncompressed_size += info.file_size
                 
+                # Check file path for traversal attempts
+                if '..' in info.filename or info.filename.startswith('/'):
+                    print(f"Potentially malicious path in zip: {info.filename}")
+                    return False
+                    
                 # Check if we've exceeded the max file count
                 if file_count > max_files:
                     print(f"Zip contains too many files: {file_count}")
                     return False
                 
-                # Check individual file size ratio
+                # Check individual file size ratio only if file is compressed
                 if info.compress_size > 0:
                     file_ratio = info.file_size / info.compress_size
                     if file_ratio > max_size_ratio:
@@ -399,12 +405,11 @@ def is_safe_zip(zip_path: str, max_size_ratio: int = 100, max_files: int = 1000)
             # Check overall ratio
             if compressed_size > 0:
                 total_ratio = uncompressed_size / compressed_size
-                print(f"Zip ratio: {total_ratio}, files: {file_count}")
-                
                 if total_ratio > max_size_ratio:
                     print(f"Zip bomb detected - ratio {total_ratio}")
                     return False
-            
+                
+            print(f"Zip file passed security checks: {zip_path} (files: {file_count}, ratio: {uncompressed_size/compressed_size:.1f})")
             return True
     except zipfile.BadZipFile:
         print(f"Not a valid zip file: {zip_path}")
