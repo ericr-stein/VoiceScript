@@ -403,7 +403,8 @@ async def open_editor(file_name, user_id):
 
     # Extract base filename without extension to avoid double extension
     base_file_name, _ = os.path.splitext(file_name)
-    video_path = f"/data/{user_id}/{base_file_name}.mp4"
+    # Include BASE_PATH in the video path for correct browser-side URL
+    video_path = f"{BASE_PATH}/data/{user_id}/{base_file_name}.mp4"
     content = content.replace(
         '<video id="player" width="100%" style="max-height: 320px" src="" type="video/MP4" controls="controls" position="sticky"></video>',
         f'<video id="player" width="100%" style="max-height: 320px" src="{video_path}" type="video/MP4" controls="controls" position="sticky"></video>',
