@@ -33,6 +33,8 @@ WINDOWS = os.getenv("WINDOWS") == "True"
 SSL_CERTFILE = os.getenv("SSL_CERTFILE")
 SSL_KEYFILE = os.getenv("SSL_KEYFILE")
 SUMMARIZATION = os.getenv("SUMMARIZATION") == "True"
+# Base path for reverse proxy (e.g., "/secure" for secure version)
+BASE_PATH = os.getenv("BASE_PATH", "")
 
 if WINDOWS:
     os.environ["PATH"] += os.pathsep + "ffmpeg/bin"
@@ -206,6 +208,7 @@ async def handle_upload(e: events.UploadEventArguments, user_id):
     
     # Check if the file is a ZIP and verify it's safe
     if file_name.lower().endswith('.zip'):
+        from src.security import is_safe_zip
         if not is_safe_zip(temp_path):
             os.remove(temp_path)
             ui.notify("Unsichere ZIP-Datei wurde abgelehnt (mögliche ZIP-Bombe oder verdächtige Dateien erkannt).", 
@@ -330,8 +333,8 @@ async def download_editor(file_name, user_id):
         # Generate a secure download token
         download_token = generate_download_token(final_file_name, user_id)
         
-        # Create the secure download URL
-        download_url = f"/secure-download/{download_token}"
+        # Create the secure download URL with base path
+        download_url = f"{BASE_PATH}/secure-download/{download_token}"
         download_filename = f"{os.path.splitext(file_name)[0]}.html"
         
         # Redirect to the download URL
@@ -548,7 +551,7 @@ def update_language(user_id):
         app.storage.user[f"{user_id}_language"] = INVERTED_LANGUAGES[user_storage[user_id]["language"].value]
 
 
-@ui.page("/editor")
+@ui.page(f"{BASE_PATH}/editor")
 async def editor():
     """Prepare and open the editor for online editing."""
 
@@ -670,7 +673,7 @@ def inspect_docker_container(user_id):
         return f"Error in diagnostic function: {str(e)}"
 
 
-@ui.page("/")
+@ui.page(f"{BASE_PATH}/")
 async def main_page():
     """Main page of the application."""
 
@@ -891,7 +894,7 @@ async def main_page():
 
 
 # Register the secure download endpoint
-@app.get("/secure-download/{token}")
+@app.get(f"{BASE_PATH}/secure-download/{{token}}")
 async def secure_download_endpoint(token: str):
     """Handle secure downloads with token validation"""
     # Validate the download token

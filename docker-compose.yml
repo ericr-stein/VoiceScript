@@ -12,6 +12,8 @@ services:
     volumes:
       - hugging_face_cache_secure:/root/.cache/huggingface
       - ./data_secure:/app/data
+    environment:
+      - BASE_PATH=/secure
     labels:
       # Enable Traefik
       - "traefik.enable=true"
