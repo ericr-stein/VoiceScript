@@ -551,7 +551,7 @@ def update_language(user_id):
         app.storage.user[f"{user_id}_language"] = INVERTED_LANGUAGES[user_storage[user_id]["language"].value]
 
 
-@ui.page(f"{BASE_PATH}/editor")
+@ui.page("/editor")
 async def editor():
     """Prepare and open the editor for online editing."""
 
@@ -673,7 +673,7 @@ def inspect_docker_container(user_id):
         return f"Error in diagnostic function: {str(e)}"
 
 
-@ui.page(f"{BASE_PATH}/")
+@ui.page("/")
 async def main_page():
     """Main page of the application."""
 
@@ -894,7 +894,7 @@ async def main_page():
 
 
 # Register the secure download endpoint
-@app.get(f"{BASE_PATH}/secure-download/{{token}}")
+@app.get("/secure-download/{token}")
 async def secure_download_endpoint(token: str):
     """Handle secure downloads with token validation"""
     # Validate the download token
