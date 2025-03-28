@@ -213,6 +213,51 @@ def get_secure_user_id(storage_secret: str, online: bool = True) -> str:
 
 # ------ SECURITY MIDDLEWARE ------
 
+from starlette.middleware.base import BaseHTTPMiddleware
+
+class SecurityHeadersMiddleware(BaseHTTPMiddleware):
+    """
+    Middleware to add security headers to all responses
+    
+    This middleware adds various security headers to HTTP responses to improve
+    the security posture of the application.
+    """
+    
+    def __init__(self, app, ssl_enabled=False):
+        """
+        Initialize the middleware
+        
+        Args:
+            app: The FastAPI application
+            ssl_enabled: Whether SSL/HTTPS is enabled
+        """
+        super().__init__(app)
+        self.ssl_enabled = ssl_enabled
+        
+    async def dispatch(self, request, call_next):
+        """
+        Process each request/response and add security headers
+        
+        Args:
+            request: The incoming HTTP request
+            call_next: Function to call the next middleware or route handler
+            
+        Returns:
+            The HTTP response with added security headers
+        """
+        response = await call_next(request)
+        
+        # Add security headers
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        response.headers["X-Frame-Options"] = "DENY"
+        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+        
+        # Cookie security (when using HTTPS)
+        if self.ssl_enabled:
+            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        
+        return response
+
 def configure_security_middleware(fastapi_app, ssl_enabled=False):
     """
     Configure security middleware for the FastAPI application
@@ -221,20 +266,7 @@ def configure_security_middleware(fastapi_app, ssl_enabled=False):
         fastapi_app: The FastAPI application instance
         ssl_enabled: Whether SSL/HTTPS is enabled
     """
-    @fastapi_app.middleware('http')
-    async def security_headers_middleware(request, call_next):
-        response = await call_next(request)
-        # Add security headers
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
-        
-        # Cookie security (when using HTTPS)
-        if ssl_enabled:
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        
-        return response
-    
+    fastapi_app.add_middleware(SecurityHeadersMiddleware, ssl_enabled=ssl_enabled)
     return fastapi_app
 
 def get_cookie_options(ssl_enabled=False):

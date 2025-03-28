@@ -878,7 +878,7 @@ async def main_page():
             display_files(user_id=user_id)
 
 
-# Register the secure download endpoint with FastAPI directly
+# Register the secure download endpoint
 @app.get("/secure-download/{token}")
 async def secure_download_endpoint(token: str):
     """Handle secure downloads with token validation"""
@@ -906,20 +906,9 @@ if __name__ in {"__main__", "__mp_main__"}:
     # Configure security middleware
     ssl_enabled = ONLINE and SSL_CERTFILE and SSL_KEYFILE
     
-    # Add security middleware to the underlying FastAPI app
-    @app.server.app.middleware('http')
-    async def security_headers_middleware(request, call_next):
-        response = await call_next(request)
-        # Add security headers
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
-        
-        # Cookie security (when using HTTPS)
-        if ssl_enabled:
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
-        
-        return response
+    # Add security middleware to the FastAPI app
+    from src.security import SecurityHeadersMiddleware
+    app.add_middleware(SecurityHeadersMiddleware, ssl_enabled=ssl_enabled)
     
     # Configure cookie options
     cookie_options = {
