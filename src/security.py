@@ -72,12 +72,21 @@ def safe_path(base_dir: str, user_input: str) -> str:
 
 # ------ TOKEN GENERATION AND VALIDATION ------
 
+# User session token configuration
+SESSION_TOKEN_EXPIRY_DAYS = 7  # 7-day tokens
+TOKEN_RENEWAL_THRESHOLD = 0.2  # Renew when less than 20% of time remains
+
 def generate_secure_token() -> str:
-    """Generate a cryptographically secure token"""
-    # Generate 32 bytes (256 bits) of random data
+    """Generate a cryptographically secure token with expiration timestamp"""
+    # Generate 32 bytes (256 bits) of random data for the token ID
     random_bytes = secrets.token_bytes(32)
-    # Return as URL-safe base64 string
-    return base64.urlsafe_b64encode(random_bytes).decode('utf-8')
+    token_id = base64.urlsafe_b64encode(random_bytes).decode('utf-8')
+    
+    # Add expiration timestamp (7 days from now)
+    expiry = int(time.time() + (SESSION_TOKEN_EXPIRY_DAYS * 86400))
+    
+    # Format as id:expiry
+    return f"{token_id}:{expiry}"
 
 def sign_token(token: str, secret_key: str) -> str:
     """Add a server-side signature to prevent token tampering"""
@@ -88,38 +97,56 @@ def sign_token(token: str, secret_key: str) -> str:
         hashlib.sha256
     ).digest()
     
-    # Combine token and signature
+    # Combine token and signature with double-colon delimiter to avoid conflicts with token format
     signed_token = base64.urlsafe_b64encode(
-        token.encode('utf-8') + b':' + signature
+        token.encode('utf-8') + b'::' + signature
     ).decode('utf-8')
     
     return signed_token
 
 def validate_token(signed_token: str, secret_key: str) -> Optional[str]:
-    """Verify that a token was signed by our server"""
+    """Verify that a token was signed by our server and is not expired"""
     try:
         # Decode the combined token
         decoded = base64.urlsafe_b64decode(signed_token.encode('utf-8'))
         
-        # Split into original token and signature
-        parts = decoded.split(b':')
+        # Split into original token and signature using double-colon delimiter
+        parts = decoded.split(b'::')
         if len(parts) != 2:
             return None
             
-        token, signature = parts
+        token_with_expiry, signature = parts
         
         # Verify signature
         expected_signature = hmac.new(
             secret_key.encode('utf-8'),
-            token,
+            token_with_expiry,
             hashlib.sha256
         ).digest()
         
         if not hmac.compare_digest(signature, expected_signature):
             return None
             
-        return token.decode('utf-8')
-    except Exception:
+        # Extract user_id and expiry
+        token_data = token_with_expiry.decode('utf-8').split(':')
+        if len(token_data) != 2:
+            return None
+            
+        user_id, expiry_str = token_data
+        
+        # Check if token has expired
+        try:
+            expiry = int(expiry_str)
+            if time.time() > expiry:
+                print(f"Token expired: {expiry_str}")
+                return None
+        except (ValueError, TypeError):
+            print(f"Invalid expiry in token: {expiry_str}")
+            return None
+            
+        return user_id
+    except Exception as e:
+        print(f"Token validation error: {str(e)}")
         return None
 
 # ------ RATE LIMITING ------
@@ -174,7 +201,7 @@ def get_client_ip() -> str:
 
 def get_secure_user_id(storage_secret: str, online: bool = True) -> str:
     """
-    Get a secure user ID, creating a new one if needed
+    Get a secure user ID, creating a new one if needed or refreshing if close to expiry
     
     Args:
         storage_secret: The secret key used for signing tokens
@@ -200,16 +227,49 @@ def get_secure_user_id(storage_secret: str, online: bool = True) -> str:
     signed_token = app.storage.browser.get("id", "")
     
     if signed_token != "local":
-        # Validate the token
-        user_id = validate_token(signed_token, storage_secret)
-        if user_id:
-            return user_id
+        try:
+            # Decode and examine token structure (without validation yet)
+            decoded = base64.urlsafe_b64decode(signed_token.encode('utf-8'))
+            parts = decoded.split(b'::')
+            
+            if len(parts) == 2:
+                token_with_expiry = parts[0].decode('utf-8')
+                token_parts = token_with_expiry.split(':')
+                
+                if len(token_parts) == 2:
+                    user_id, expiry_str = token_parts
+                    
+                    try:
+                        # Validate the token normally
+                        validated_user_id = validate_token(signed_token, storage_secret)
+                        if validated_user_id:
+                            # Token is valid - check if needs renewal
+                            current_time = time.time()
+                            expiry = int(expiry_str)
+                            token_age = expiry - current_time
+                            token_max_age = SESSION_TOKEN_EXPIRY_DAYS * 86400
+                            
+                            # If less than 20% of validity period remains, refresh token
+                            if token_age < (token_max_age * TOKEN_RENEWAL_THRESHOLD):
+                                print(f"Refreshing token for {user_id} ({token_age} seconds remaining)")
+                                new_expiry = int(current_time + token_max_age)
+                                new_token = f"{user_id}:{new_expiry}"
+                                signed_token = sign_token(new_token, storage_secret)
+                                app.storage.browser["id"] = signed_token
+                            
+                            return validated_user_id
+                    except Exception as e:
+                        print(f"Error checking token expiry: {e}")
+        except Exception as e:
+            print(f"Token inspection error: {e}")
     
     # If we don't have a valid token, generate a new one
     new_token = generate_secure_token()
     signed_token = sign_token(new_token, storage_secret)
     app.storage.browser["id"] = signed_token
-    return new_token
+    
+    # Extract just the user ID part from the new token
+    return new_token.split(':')[0]
 
 # ------ SECURITY MIDDLEWARE ------
 

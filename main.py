@@ -11,6 +11,8 @@ from dotenv import load_dotenv
 from nicegui import ui, events, app
 from fastapi import HTTPException
 from fastapi.responses import FileResponse
+from fastapi.staticfiles import StaticFiles
+from src.cleanup import start_cleanup_thread
 from src.security import (
     get_secure_user_id, configure_security_middleware, get_cookie_options,
     sanitize_filename, safe_path, generate_download_token, validate_download_token
@@ -916,10 +918,24 @@ async def secure_download_endpoint(token: str):
     )
 
 
+# Mount static files directory for user media
+data_out_dir = join(ROOT, "data", "out")
+try:
+    # Ensure directory exists
+    os.makedirs(data_out_dir, exist_ok=True)
+    # Mount the directory for static file serving at application startup
+    app.mount("/data", StaticFiles(directory=data_out_dir), name="user_media")
+    print(f"Mounted static files: '/data' path -> '{data_out_dir}' directory")
+except Exception as e:
+    print(f"Warning: Failed to mount static files directory: {e}")
+
 if __name__ in {"__main__", "__mp_main__"}:
     # Create all required directories at startup
     for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
         os.makedirs(join(ROOT, directory), exist_ok=True)
+    
+    # Start the directory cleanup thread
+    start_cleanup_thread(ROOT)
     
     # Configure security middleware
     ssl_enabled = ONLINE and SSL_CERTFILE and SSL_KEYFILE
