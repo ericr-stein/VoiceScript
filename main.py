@@ -35,8 +35,7 @@ WINDOWS = os.getenv("WINDOWS") == "True"
 SSL_CERTFILE = os.getenv("SSL_CERTFILE")
 SSL_KEYFILE = os.getenv("SSL_KEYFILE")
 SUMMARIZATION = os.getenv("SUMMARIZATION") == "True"
-# Base path for reverse proxy (e.g., "/secure" for secure version)
-BASE_PATH = os.getenv("BASE_PATH", "")
+# Base path no longer needed - application will be served directly at the root
 
 if WINDOWS:
     os.environ["PATH"] += os.pathsep + "ffmpeg/bin"
@@ -289,8 +288,6 @@ setTimeout(function() {{
         f.write(content)
 
 
-# We'll define a secure download endpoint in the main app initialization
-
 async def download_editor(file_name, user_id):
     """Secure download function using token-based access"""
     try:
@@ -335,8 +332,8 @@ async def download_editor(file_name, user_id):
         # Generate a secure download token
         download_token = generate_download_token(final_file_name, user_id)
         
-        # Create the secure download URL with base path
-        download_url = f"{BASE_PATH}/secure-download/{download_token}"
+        # Create the secure download URL without BASE_PATH
+        download_url = f"/secure-download/{download_token}"
         download_filename = f"{os.path.splitext(file_name)[0]}.html"
         
         # Redirect to the download URL
@@ -394,9 +391,6 @@ async def download_srt(file_name, user_id):
         ui.notify(error_msg, color="negative")
 
 
-# We will use NiceGUI's built-in static file serving instead of a custom endpoint
-
-
 async def open_editor(file_name, user_id):
     out_user_dir = join(ROOT, "data", "out", user_id)
     full_file_name = join(out_user_dir, file_name + ".html")
@@ -405,8 +399,8 @@ async def open_editor(file_name, user_id):
 
     # Extract base filename without extension to avoid double extension
     base_file_name, _ = os.path.splitext(file_name)
-    # Include BASE_PATH in the video path for correct browser-side URL
-    video_path = f"{BASE_PATH}/data/{user_id}/{base_file_name}.mp4"
+    # Update video path - remove BASE_PATH
+    video_path = f"/data/{user_id}/{base_file_name}.mp4"
     content = content.replace(
         '<video id="player" width="100%" style="max-height: 320px" src="" type="video/MP4" controls="controls" position="sticky"></video>',
         f'<video id="player" width="100%" style="max-height: 320px" src="{video_path}" type="video/MP4" controls="controls" position="sticky"></video>',
@@ -586,7 +580,7 @@ return content.slice({i * 500_000}, {(i + 1) * 500_000});
     user_id = get_secure_user_id(STORAGE_SECRET, ONLINE)
 
     out_user_dir = join(ROOT, "data", "out", user_id)
-    app.add_media_files(f"/data/{user_id}", out_user_dir)
+    # No need to add media files here - we've mounted them globally
     user_data = user_storage.get(user_id, {})
     full_file_name = user_data.get("full_file_name")
 
@@ -676,306 +670,3 @@ def inspect_docker_container(user_id):
         return result
     except Exception as e:
         return f"Error in diagnostic function: {str(e)}"
-
-
-@ui.page("/")
-async def main_page():
-    """Main page of the application."""
-
-    def refresh_file_view(user_id, refresh_queue, refresh_results):
-        num_errors = len(user_storage[user_id]["known_errors"])
-        read_files(user_id)
-        if refresh_queue:
-            display_queue.refresh(user_id=user_id)
-        if refresh_results or num_errors < len(user_storage[user_id]["known_errors"]):
-            display_results.refresh(user_id=user_id)
-
-    @ui.refreshable
-    def display_queue(user_id):
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
-            if 0 <= file_status[2] < 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
-                ui.button(
-                    "Abbrechen",
-                    on_click=partial(
-                        delete_file,
-                        file_name=file_status[0],
-                        user_id=user_id,
-                        refresh_file_view=refresh_file_view,
-                    ),
-                    color="red-5",
-                ).props("no-caps")
-                ui.linear_progress(value=file_status[2] / 100, show_value=False, size="10px").props("instant-feedback")
-                ui.separator()
-
-    @ui.refreshable
-    def display_results(user_id):
-        any_file_ready = False
-        for file_status in sorted(user_storage[user_id]["file_list"], key=lambda x: (x[2], -x[4], x[0])):
-            if user_storage[user_id].get("updates") and user_storage[user_id]["updates"][0] == file_status[0]:
-                file_status = user_storage[user_id]["updates"]
-            if file_status[2] >= 100.0:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}</b>")
-                with ui.row():
-                    ui.button(
-                        "Editor herunterladen (Lokal)",
-                        on_click=partial(download_editor, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "Editor öffnen (Server)",
-                        on_click=partial(open_editor, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "SRT-Datei",
-                        on_click=partial(download_srt, file_name=file_status[0], user_id=user_id),
-                    ).props("no-caps")
-                    ui.button(
-                        "Datei entfernen",
-                        on_click=partial(
-                            delete_file,
-                            file_name=file_status[0],
-                            user_id=user_id,
-                            refresh_file_view=refresh_file_view,
-                        ),
-                        color="red-5",
-                    ).props("no-caps")
-                    any_file_ready = True
-                if SUMMARIZATION:
-                    with ui.row():
-                        summary_create = ui.button(
-                            "Zusammenfassung erstellen",
-                            on_click=partial(
-                                summarize, file_name=file_status[0], user_id=user_id
-                            ),
-                        ).props("no-caps")
-                        summary_create.disable()
-                        summary_download = ui.button(
-                            "Zusammenfassung herunterladen",
-                            on_click=partial(
-                                download_summary,
-                                file_name=file_status[0],
-                                user_id=user_id,
-                            ),
-                        ).props("no-caps")
-                        summary_download.disable()
-
-                        if os.path.isfile(
-                            join(
-                                ROOT + "data/out",
-                                user_id,
-                                file_status[0] + ".htmlsummary",
-                            )
-                        ):
-                            summary_download.enable()
-                        if not os.path.isfile(
-                            join(
-                                ROOT + "data/out",
-                                user_id,
-                                file_status[0] + ".todosummary",
-                            )
-                        ):
-                            summary_create.enable()
-                        else:
-                            ui.label("in Bearbeitung")
-                ui.separator()
-            elif file_status[2] == -1:
-                ui.markdown(f"<b>{file_status[0].replace('_', BACKSLASHCHAR + '_')}:</b> {file_status[1]}")
-                ui.button(
-                    "Datei entfernen",
-                    on_click=partial(
-                        delete_file,
-                        file_name=file_status[0],
-                        user_id=user_id,
-                        refresh_file_view=refresh_file_view,
-                    ),
-                    color="red-5",
-                ).props("no-caps")
-                ui.separator()
-        if any_file_ready:
-            ui.button(
-                "Alle Dateien herunterladen",
-                on_click=partial(download_all, user_id=user_id),
-            ).props("no-caps")
-
-    def display_files(user_id):
-        read_files(user_id)
-        with ui.card().classes("border p-4").style("width: min(60vw, 700px);"):
-            display_queue(user_id=user_id)
-            display_results(user_id=user_id)
-
-    if ONLINE:
-        user_id = get_secure_user_id(STORAGE_SECRET, ONLINE)
-    else:
-        user_id = "local"
-
-    user_storage[user_id] = {
-        "uploaded_files": set(),
-        "file_list": [],
-        "content": "",
-        "content_filename": "",
-        "file_in_progress": None,
-        "known_errors": set(),
-    }
-
-    in_user_tmp_dir = join(ROOT, "data", "in", user_id, "tmp")
-    if os.path.exists(in_user_tmp_dir):
-        shutil.rmtree(in_user_tmp_dir)
-
-    read_files(user_id)
-
-    with ui.column():
-        with ui.header(elevated=True).style("background-color: #0070b4;").props("fit=scale-down").classes("q-pa-xs-xs"):
-            ui.image(join(ROOT, "data", "banner.png")).style("height: 90px; width: 443px;")
-        with ui.row():
-            with ui.column():
-                with ui.card().classes("border p-4"):
-                    with ui.card().style("width: min(40vw, 400px)"):
-                        upload_element = (
-                            ui.upload(
-                                multiple=True,
-                                on_upload=partial(handle_upload, user_id=user_id),
-                                on_rejected=handle_reject,
-                                label="Dateien auswählen",
-                                auto_upload=True,
-                                max_file_size=12_000_000_000,
-                                max_files=100,
-                            )
-                            .props('accept="video/*, audio/*, .zip"')
-                            .tooltip("Dateien auswählen")
-                            .classes("w-full")
-                            .style("width: 100%;")
-                        )
-                        upload_element.on(
-                            "uploaded",
-                            partial(
-                                handle_added,
-                                user_id=user_id,
-                                upload_element=upload_element,
-                                refresh_file_view=refresh_file_view,
-                            ),
-                        )
-
-                ui.label("")
-                
-                # Quick timer for checking file progress
-                ui.timer(
-                    1,  # Check frequently for better responsiveness
-                    partial(listen, user_id=user_id, refresh_file_view=refresh_file_view),
-                )
-                user_storage[user_id]["language"] = ui.select(
-                    [LANGUAGES[key] for key in LANGUAGES],
-                    value="deutsch",
-                    on_change=partial(update_language, user_id),
-                    label="Gesprochene Sprache",
-                ).style("width: min(40vw, 400px)")
-                with (
-                    ui.expansion("Vokabular", icon="menu_book")
-                    .classes("w-full no-wrap")
-                    .style("width: min(40vw, 400px)") as expansion
-                ):
-                    user_storage[user_id]["textarea"] = ui.textarea(
-                        label="Vokabular",
-                        placeholder="Zürich\nUster\nUitikon",
-                        on_change=partial(update_hotwords, user_id),
-                    ).classes("w-full h-full")
-                    hotwords = app.storage.user.get(f"{user_id}_vocab", "").strip()
-                    if hotwords:
-                        user_storage[user_id]["textarea"].value = hotwords
-                        expansion.open()
-                with (
-                    ui.expansion("Informationen", icon="help_outline")
-                    .classes("w-full no-wrap")
-                    .style("width: min(40vw, 400px)")
-                ):
-                    ui.label("Diese Prototyp-Applikation wurde vom Statistischen Amt & Amt für Informatik Kanton Zürich entwickelt.")
-                ui.button(
-                    "Anleitung öffnen",
-                    on_click=lambda: ui.open(help_page, new_tab=True),
-                ).props("no-caps")
-
-            display_files(user_id=user_id)
-
-
-# Register the secure download endpoint
-@app.get("/secure-download/{token}")
-async def secure_download_endpoint(token: str):
-    """Handle secure downloads with token validation"""
-    # Validate the download token
-    file_path = validate_download_token(token)
-    if not file_path or not os.path.exists(file_path):
-        print(f"Invalid download request: {token}")
-        raise HTTPException(status_code=404, detail="File not found or invalid token")
-    
-    # Return the file for download
-    filename = os.path.basename(file_path)
-    print(f"Serving download: {filename}")
-    return FileResponse(
-        path=file_path,
-        filename=filename,
-        media_type="application/octet-stream"
-    )
-
-
-# Mount static files directory for user media
-data_out_dir = join(ROOT, "data", "out")
-try:
-    # Ensure directory exists
-    os.makedirs(data_out_dir, exist_ok=True)
-    # Mount the directory for static file serving at application startup
-    app.mount("/data", StaticFiles(directory=data_out_dir), name="user_media")
-    print(f"Mounted static files: '/data' path -> '{data_out_dir}' directory")
-except Exception as e:
-    print(f"Warning: Failed to mount static files directory: {e}")
-
-if __name__ in {"__main__", "__mp_main__"}:
-    # Create all required directories at startup
-    for directory in ['data/in', 'data/out', 'data/worker', 'data/error']:
-        os.makedirs(join(ROOT, directory), exist_ok=True)
-    
-    # Start the directory cleanup thread
-    start_cleanup_thread(ROOT)
-    
-    # Configure security middleware
-    ssl_enabled = ONLINE and SSL_CERTFILE and SSL_KEYFILE
-    
-    # Add security middleware to the FastAPI app
-    from src.security import SecurityHeadersMiddleware
-    app.add_middleware(SecurityHeadersMiddleware, ssl_enabled=ssl_enabled)
-    
-    # Configure cookie options
-    cookie_options = {
-        "httponly": True,  # Prevents JavaScript access to cookies
-        "samesite": "Strict",  # Prevents CSRF attacks
-    }
-    
-    # Add secure flag when using HTTPS
-    if ssl_enabled:
-        cookie_options["secure"] = True
-    
-    # NOTE: Cookie security flags (HttpOnly, Secure, SameSite) should be configured in Traefik:
-    # - Add a middleware in docker-compose.yml for setting cookie attributes
-    # - Example: "traefik.http.middlewares.secure-cookies.headers.customresponseheaders.Set-Cookie=SameSite=Strict; Secure; HttpOnly"
-    
-    if ONLINE:
-        # Configure UI with security options (storage_secret provides cookie signing)
-        ui.run(
-            port=8080,
-            title="TranscriboZH",
-            storage_secret=STORAGE_SECRET,
-            favicon=join(ROOT, "data", "logo.png"),
-            root_path=BASE_PATH  # Add root_path for proper asset serving behind path prefix
-        )
-
-        # run command with ssl certificate
-        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png", root_path=BASE_PATH)
-    else:
-        ui.run(
-            title="Transcribo",
-            host="127.0.0.1",
-            port=8080,
-            storage_secret=STORAGE_SECRET,
-            favicon=join(ROOT, "data", "logo.png"),
-            root_path=BASE_PATH  # Add root_path for proper asset serving behind path prefix
-        )

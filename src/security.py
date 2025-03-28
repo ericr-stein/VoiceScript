@@ -312,9 +312,8 @@ class SecurityHeadersMiddleware(BaseHTTPMiddleware):
         response.headers["X-Frame-Options"] = "DENY"
         response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; style-src 'self' 'unsafe-inline'; img-src 'self' data:;"
         
-        # Cookie security (when using HTTPS)
-        if self.ssl_enabled:
-            response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+        # Note: HSTS headers are handled by Traefik for our configuration
+        # We avoid setting them here to prevent conflicts
         
         return response
 

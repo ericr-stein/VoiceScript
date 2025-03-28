@@ -1,127 +1,149 @@
-# Security Considerations for Audio Transcription Application
+# Security Improvements for Audio Transcription System
 
-This document outlines the security features, considerations, and recommendations for the Audio Transcription application.
+This document details the security improvements made to the Audio Transcription System, along with deployment instructions.
 
-## Implemented Security Features
+## Changes Implemented
 
-### User Session Security
-- User sessions are secured with cryptographically signed tokens using HMAC-SHA256
-- Rate limiting protects against brute-force attacks and session enumeration
-- Session tokens are validated on each request
-- Session data is isolated per user with unique user IDs
+### 1. Path Prefix Removal for Improved URL Structure
 
-### File Upload Security
-- Filename sanitization prevents path traversal attacks
-- Temporary file handling ensures partially uploaded files don't enter processing
-- ZIP bomb detection prevents denial-of-service attacks by:
-  - Checking compression ratios (uncompressed size / compressed size)
-  - Limiting maximum number of files
-  - Validating file paths within archives for traversal attempts
-- File type validation restricts uploads to audio, video, and safe ZIP files
+We've removed the `/secure` path prefix from the application, simplifying the URL structure and fixing 404 issues:
 
-### Download Security
-- One-time-use, expiring download tokens prevent unauthorized access to generated files
-- Token-based downloads ensure only authorized users can access specific files
-- File existence and content validation before serving prevents empty file attacks
-- Tokens expire after 1 hour to limit the attack window
+- **Main application**: Now served directly at the root of the hostname (`https://sp000200-t6.kt.ktzh.ch/`)
+- **Monitoring**: Still served at dedicated paths (`/prometheus` and `/grafana`)
 
-### HTTP Security Headers
-- Content-Security-Policy limits resource loading to reduce XSS risks
-- X-Frame-Options: DENY prevents clickjacking
-- X-Content-Type-Options: nosniff prevents MIME sniffing attacks
-- HSTS header enforces HTTPS when enabled
+#### Files Changed:
+- `main.py`: Removed BASE_PATH variable and references
+- `docker-compose.yml`: Updated Traefik routing configuration
+
+### 2. Enhanced File Security
+
+Added security checks to prevent various types of attacks:
+
+- **Filename Sanitization**: All filenames are properly sanitized to prevent path traversal
+- **ZIP-bomb Protection**: Added safeguards against ZIP bombs and malicious archives
+- **Path Validation**: Implemented strict path validation to prevent directory traversal
+
+### 3. Secure Downloads
+
+- **Token-based Downloads**: Implemented secure, time-limited tokens for file downloads
+- **One-time-use Tokens**: Download tokens can only be used once
+- **Content-Disposition**: Proper headers ensure downloads work correctly
+
+### 4. User Session Management
+
+- **Token Expiration**: Session tokens now expire after 7 days
+- **Auto-renewal**: Tokens are automatically renewed when less than 20% of lifetime remains
+- **Signature Verification**: Token validation includes cryptographic signature verification
+
+### 5. Automatic Directory Cleanup
+
+Added an automated cleanup system that:
+- Removes inactive user directories after 7 days
+- Runs once per day on a background thread
+- Preserves system resources by removing unused files
+
+## Deployment Instructions
+
+Follow these steps to deploy the updated system:
+
+1. **Update Application Code**:
+   - Deploy the updated `main.py` file
+   - Deploy the new `src/security.py` file
+   - Deploy the new `src/cleanup.py` file
+
+2. **Update Docker Configuration**:
+   - Deploy the updated `docker-compose.yml` file
+
+3. **Rebuild and Restart Containers**:
+   ```bash
+   # Stop the current containers
+   docker-compose down
+   
+   # Rebuild the containers with the new configuration
+   docker-compose build --no-cache
+   
+   # Start the containers
+   docker-compose up -d
+   ```
+
+4. **Verify Deployment**:
+   - Check that the application is accessible at `https://sp000200-t6.kt.ktzh.ch/`
+   - Verify that Prometheus is accessible at `https://sp000200-t6.kt.ktzh.ch/prometheus`
+   - Verify that Grafana is accessible at `https://sp000200-t6.kt.ktzh.ch/grafana`
+
+5. **Test Security Features**:
+   - Verify file uploads and downloads work correctly
+   - Check editor functionality for transcribed files
+   - Test media playback in the editor
 
 ## Configuration Options
 
-### Environment Variables
-- `STORAGE_SECRET`: (Required) Used for cryptographic signing of session data
-- `SSL_CERTFILE`/`SSL_KEYFILE`: Enable direct HTTPS when not using a reverse proxy
-- `ONLINE`: Enable/disable online mode which activates additional security features
+### Directory Cleanup
 
-### Security Headers
-Security headers are added to all HTTP responses via the `SecurityHeadersMiddleware`:
+You can adjust the cleanup settings in `src/cleanup.py`:
+
 ```python
-response.headers["X-Content-Type-Options"] = "nosniff"
-response.headers["X-Frame-Options"] = "DENY"
-response.headers["Content-Security-Policy"] = "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'"
+# Default settings
+INACTIVE_DAYS = 7  # Remove directories older than 7 days
+CLEANUP_INTERVAL_HOURS = 24  # Run once per day
+CLEANUP_ENABLED = True  # Set to False to disable cleanup
 ```
 
-When SSL is enabled, an additional HSTS header is added:
+### Security Settings
+
+Session token expiration can be configured in `src/security.py`:
+
 ```python
-response.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+# User session token configuration
+SESSION_TOKEN_EXPIRY_DAYS = 7  # 7-day tokens
+TOKEN_RENEWAL_THRESHOLD = 0.2  # Renew when less than 20% of time remains
 ```
 
-## Security Limitations & Future Improvements
+Download token expiration:
 
-### Current Limitations
-- The in-memory rate limiting implementation doesn't persist across application restarts
-- Use of 'unsafe-inline' in CSP is required for NiceGUI/Quasar but reduces XSS protection
-- File-based worker communication requires proper filesystem permissions
+```python
+TOKEN_EXPIRY = 3600  # 1 hour default for download tokens
+```
 
-### Recommended Improvements
-1. **Cookie Security**: Configure cookie security at the reverse proxy (Traefik) level:
-   ```yaml
-   traefik.http.middlewares.secure-cookies.headers.customresponseheaders.Set-Cookie=SameSite=Strict; Secure; HttpOnly
-   ```
+## Monitoring
 
-2. **Enhanced Rate Limiting**: Implement Redis or database-backed rate limiting for persistence across multiple instances
+Monitor the system logs for any security-related events:
 
-3. **Client IP Detection**: Enhance client IP detection to properly handle reverse proxies:
-   ```python
-   def get_client_ip():
-       # Check X-Forwarded-For header from trusted proxies
-       if 'x-forwarded-for' in request.headers:
-           return request.headers['x-forwarded-for'].split(',')[0].strip()
-       return request.client.host
-   ```
+```bash
+docker logs -f audiotranscription-secure
+```
 
-4. **Content Security Policy**: Consider using nonces or hashes instead of 'unsafe-inline' for scripts and styles
+Look for these events in the logs:
+- "Token expired" - Indicates a user session expired
+- "Sanitized filename" - Shows filename sanitization in action
+- "Removed inactive user directory" - Confirms cleanup is working
+- "Downloaded token created/used" - Track download token usage
 
-5. **File I/O**: Use async file operations for better performance and responsiveness:
-   ```python
-   from nicegui.globals import run_sync
-   
-   async def read_files():
-       return await run_sync(lambda: os.listdir(directory))
-   ```
+## Troubleshooting
 
-6. **Docker Security**: Run as non-root user and implement resource limits:
-   ```dockerfile
-   RUN groupadd -r appuser && useradd -r -g appuser appuser
-   USER appuser
-   ```
+1. **404 Errors for Media Files**:
+   - Check the console for details on which files are failing to load
+   - Verify the mounting of the static data directory
 
-## Secure Development Practices
+2. **Authentication Issues**:
+   - Ensure Traefik is properly configured for basic auth
+   - Check that the auth header is being passed correctly
 
-### File Operations
-- Always validate and sanitize user-provided filenames
-- Use temporary files for uploads until security checks complete
-- Verify file content before processing or serving
+3. **Empty File Directories**:
+   - If user directories are being cleaned up too aggressively, adjust the `INACTIVE_DAYS` setting in `src/cleanup.py`
 
-### Authentication & Session Management
-- Generate and validate tokens cryptographically
-- Implement rate limiting to prevent brute force attacks
-- Use short-lived, single-use tokens for sensitive operations
+## Security Best Practices
 
-### Configuration & Deployment
-- Use environment variables for sensitive configuration
-- Set proper filesystem permissions on data directories
-- Configure a reverse proxy with TLS termination and security headers
+Additional security measures that should be maintained:
 
-## Security Incident Response
+1. **Keep Credentials Secure**:
+   - Store passwords and secrets in environment variables
+   - Use `.env` files for local development only
 
-If you discover a security vulnerability in this application, please follow these steps:
+2. **Regular Updates**:
+   - Keep container images updated
+   - Apply security patches promptly
 
-1. **Do not disclose the vulnerability publicly** until it has been addressed
-2. Report the issue to the maintainers with detailed information
-3. Allow time for the vulnerability to be fixed before public disclosure
-
-## Maintenance & Updates
-
-This security document should be reviewed and updated whenever:
-- New features are added to the application
-- Security vulnerabilities are identified and fixed
-- The threat landscape changes
-- New best practices emerge
-
-Last Updated: March 28, 2025
+3. **Access Control**:
+   - Maintain the secure Basic Auth for administrative endpoints
+   - Consider implementing role-based access control for more granular permissions
