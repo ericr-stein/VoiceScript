@@ -878,8 +878,8 @@ async def main_page():
             display_files(user_id=user_id)
 
 
-# Define the secure download endpoint
-@ui.get("/secure-download/{token}")
+# Register the secure download endpoint with FastAPI directly
+@app.get("/secure-download/{token}")
 async def secure_download_endpoint(token: str):
     """Handle secure downloads with token validation"""
     # Validate the download token
