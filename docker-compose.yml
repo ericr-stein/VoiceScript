@@ -1,34 +1,36 @@
 services:
-  transcriber:
-    image: transcribo:latest
-    container_name: audiotranscription
+  transcriber-secure:
+    image: transcribo-secure:latest
+    container_name: audiotranscription-secure
     build:
       dockerfile: Dockerfile
       context: .
       platforms:
         - linux/amd64
     ports:
-      - "8080:8080"
+      - "8085:8080"
     volumes:
-      - hugging_face_cache:/root/.cache/huggingface
-      - ./data:/app/data
+      - hugging_face_cache_secure:/root/.cache/huggingface
+      - ./data_secure:/app/data
     labels:
       # Enable Traefik
       - "traefik.enable=true"
       
       # Router configuration
-      - "traefik.http.routers.audiotranscription.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/`)"
-      - "traefik.http.routers.audiotranscription.entrypoints=websecure"
-      - "traefik.http.routers.audiotranscription.middlewares=audiotranscription-auth"
-      - "traefik.http.routers.audiotranscription.tls=true"
+      - "traefik.http.routers.audiotranscription-secure.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/secure`)"
+      - "traefik.http.routers.audiotranscription-secure.entrypoints=websecure"
+      - "traefik.http.routers.audiotranscription-secure.middlewares=audiotranscription-secure-auth,audiotranscription-secure-strip"
+      - "traefik.http.routers.audiotranscription-secure.tls=true"
       
       # Service configuration
-      - "traefik.http.services.audiotranscription.loadbalancer.server.port=8080"
+      - "traefik.http.services.audiotranscription-secure.loadbalancer.server.port=8080"
       # Add a priority to ensure root path is handled last
-      - "traefik.http.routers.audiotranscription.priority=1"
+      - "traefik.http.routers.audiotranscription-secure.priority=1"
+      # Strip prefix middleware
+      - "traefik.http.middlewares.audiotranscription-secure-strip.stripprefix.prefixes=/secure"
       
       # Basic Auth middleware - username/password (default: admin/password)
-      - "traefik.http.middlewares.audiotranscription-auth.basicauth.users=Transkription:$$2a$$12$$BM51tWbRy.6cS7GXLUyWZ.iC1kuD5Xr39EG823KwStaXUsHNOsY9O"
+      - "traefik.http.middlewares.audiotranscription-secure-auth.basicauth.users=Transkription:$$2a$$12$$BM51tWbRy.6cS7GXLUyWZ.iC1kuD5Xr39EG823KwStaXUsHNOsY9O"
     networks:
       - traefik_network
     deploy:
@@ -41,62 +43,62 @@ services:
     restart: unless-stopped
 
   # Monitoring services
-  prometheus:
+  prometheus-secure:
     image: prom/prometheus:latest
-    container_name: prometheus
+    container_name: prometheus-secure
     volumes:
       - ./monitoring/prometheus/prometheus.yml:/etc/prometheus/prometheus.yml
-      - prometheus_data:/prometheus
+      - prometheus_data_secure:/prometheus
     ports:
-      - "9090:9090"
+      - "9095:9090"
     restart: unless-stopped
     networks:
       - traefik_network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.prometheus.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/prometheus`)"
-      - "traefik.http.routers.prometheus.entrypoints=websecure"
-      - "traefik.http.routers.prometheus.middlewares=prometheus-strip,audiotranscription-auth"
-      - "traefik.http.routers.prometheus.tls=true"
-      - "traefik.http.middlewares.prometheus-strip.stripprefix.prefixes=/prometheus"
-      - "traefik.http.services.prometheus.loadbalancer.server.port=9090"
-      - "traefik.http.routers.prometheus.priority=10"
+      - "traefik.http.routers.prometheus-secure.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/secure/prometheus`)"
+      - "traefik.http.routers.prometheus-secure.entrypoints=websecure"
+      - "traefik.http.routers.prometheus-secure.middlewares=prometheus-secure-strip,audiotranscription-secure-auth"
+      - "traefik.http.routers.prometheus-secure.tls=true"
+      - "traefik.http.middlewares.prometheus-secure-strip.stripprefix.prefixes=/secure/prometheus"
+      - "traefik.http.services.prometheus-secure.loadbalancer.server.port=9090"
+      - "traefik.http.routers.prometheus-secure.priority=10"
 
-  grafana:
+  grafana-secure:
     image: grafana/grafana:latest
-    container_name: grafana
+    container_name: grafana-secure
     volumes:
       - ./monitoring/grafana/provisioning:/etc/grafana/provisioning
-      - grafana_data:/var/lib/grafana
+      - grafana_data_secure:/var/lib/grafana
     environment:
       - GF_AUTH_ANONYMOUS_ENABLED=true
       - GF_AUTH_ANONYMOUS_ORG_ROLE=Viewer
       - GF_AUTH_BASIC_ENABLED=false
       - GF_USERS_ALLOW_SIGN_UP=false
       # Add Grafana base URL configuration
-      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/grafana
+      - GF_SERVER_ROOT_URL=%(protocol)s://%(domain)s/secure/grafana
       - GF_SERVER_SERVE_FROM_SUB_PATH=true
     ports:
-      - "3000:3000"
+      - "3005:3000"
     depends_on:
-      - prometheus
+      - prometheus-secure
     networks:
       - traefik_network
     labels:
       - "traefik.enable=true"
-      - "traefik.http.routers.grafana.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/grafana`)"
-      - "traefik.http.routers.grafana.entrypoints=websecure"
-      - "traefik.http.routers.grafana.middlewares=grafana-strip,audiotranscription-auth"
-      - "traefik.http.routers.grafana.tls=true"
-      - "traefik.http.middlewares.grafana-strip.stripprefix.prefixes=/grafana"
-      - "traefik.http.services.grafana.loadbalancer.server.port=3000"
-      - "traefik.http.routers.grafana.priority=10"
+      - "traefik.http.routers.grafana-secure.rule=Host(`sp000200-t6.kt.ktzh.ch`) && PathPrefix(`/secure/grafana`)"
+      - "traefik.http.routers.grafana-secure.entrypoints=websecure"
+      - "traefik.http.routers.grafana-secure.middlewares=grafana-secure-strip,audiotranscription-secure-auth"
+      - "traefik.http.routers.grafana-secure.tls=true"
+      - "traefik.http.middlewares.grafana-secure-strip.stripprefix.prefixes=/secure/grafana"
+      - "traefik.http.services.grafana-secure.loadbalancer.server.port=3000"
+      - "traefik.http.routers.grafana-secure.priority=10"
     restart: unless-stopped
 
 volumes:
-  hugging_face_cache:
-  prometheus_data:
-  grafana_data:
+  hugging_face_cache_secure:
+  prometheus_data_secure:
+  grafana_data_secure:
 
 networks:
   traefik_network:
