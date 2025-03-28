@@ -272,24 +272,7 @@ setTimeout(function() {{
         f.write(content)
 
 
-# Secure download endpoint
-@app.server.app.get("/secure-download/{token}")
-async def secure_download_endpoint(token: str):
-    """Handle secure downloads with token validation"""
-    # Validate the download token
-    file_path = validate_download_token(token)
-    if not file_path or not os.path.exists(file_path):
-        print(f"Invalid download request: {token}")
-        raise HTTPException(status_code=404, detail="File not found or invalid token")
-    
-    # Return the file for download
-    filename = os.path.basename(file_path)
-    print(f"Serving download: {filename}")
-    return FileResponse(
-        path=file_path,
-        filename=filename,
-        media_type="application/octet-stream"
-    )
+# We'll define a secure download endpoint in the main app initialization
 
 async def download_editor(file_name, user_id):
     """Secure download function using token-based access"""
@@ -893,6 +876,26 @@ async def main_page():
                 ).props("no-caps")
 
             display_files(user_id=user_id)
+
+
+# Define the secure download endpoint
+@ui.get("/secure-download/{token}")
+async def secure_download_endpoint(token: str):
+    """Handle secure downloads with token validation"""
+    # Validate the download token
+    file_path = validate_download_token(token)
+    if not file_path or not os.path.exists(file_path):
+        print(f"Invalid download request: {token}")
+        raise HTTPException(status_code=404, detail="File not found or invalid token")
+    
+    # Return the file for download
+    filename = os.path.basename(file_path)
+    print(f"Serving download: {filename}")
+    return FileResponse(
+        path=file_path,
+        filename=filename,
+        media_type="application/octet-stream"
+    )
 
 
 if __name__ in {"__main__", "__mp_main__"}:
