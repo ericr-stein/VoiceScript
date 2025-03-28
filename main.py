@@ -945,16 +945,18 @@ if __name__ in {"__main__", "__mp_main__"}:
             port=8080,
             title="TranscriboZH",
             storage_secret=STORAGE_SECRET,
-            favicon=join(ROOT, "data", "logo.png")
+            favicon=join(ROOT, "data", "logo.png"),
+            root_path=BASE_PATH  # Add root_path for proper asset serving behind path prefix
         )
 
         # run command with ssl certificate
-        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png")
+        # ui.run(port=443, reload=False, title="TranscriboZH", ssl_certfile=SSL_CERTFILE, ssl_keyfile=SSL_KEYFILE, storage_secret=STORAGE_SECRET, favicon=ROOT + "logo.png", root_path=BASE_PATH)
     else:
         ui.run(
             title="Transcribo",
             host="127.0.0.1",
             port=8080,
             storage_secret=STORAGE_SECRET,
-            favicon=join(ROOT, "data", "logo.png")
+            favicon=join(ROOT, "data", "logo.png"),
+            root_path=BASE_PATH  # Add root_path for proper asset serving behind path prefix
         )
